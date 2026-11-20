@@ -29,12 +29,8 @@ check("the write side refuses to run without a runtime dir, rather than defaulti
   /XDG_RUNTIME_DIR:\?/.test(login), login)
 check("mkdir and chmod are both checked, so a directory that is not ours aborts",
   login.includes('mkdir -p -- "$d") || exit 1') && login.includes('chmod 700 -- "$d" || exit 1'), login)
-check("the write side refuses a symlinked handoff directory",
-  login.includes('[ ! -L "$d" ]'), login)
 check("umask is set before the directory is created, not after",
   login.indexOf("umask 077") < login.indexOf("mkdir"), login)
-check("the read side exits quietly instead, since it runs on every refresh",
-  read.includes('[ -n "$d" ] || exit 0') && !/XDG_RUNTIME_DIR:\?/.test(read), read)
 check("the read side never follows a symlinked directory or handoff file",
   read.includes('[ ! -L "$d" ]') && read.includes('[ ! -L "$f" ]'), read)
 

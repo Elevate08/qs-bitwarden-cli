@@ -221,6 +221,37 @@ choice without building anything; it only runs those probes.
 ## Other things a reviewer may look for
 
 - Item URLs open with `xdg-open`, http and https only (`normalizeOpenableUrl`).
+- Besides `bw` (not bundled), two things in the plugin reach the network,
+  each behind a setting and making no request when it is off:
+  - *Website icons* (`showWebsiteIcons`, off by default). A Qt `Image` in
+    the shell process is given `<icon service>/<host>/icon.png`
+    (`ItemIcon.qml`), for logins only. `iconServiceUrl` gives the service:
+    `icons.bitwarden.net` or `.eu` for Bitwarden's cloud, `<server>/icons`
+    for the account's own server (over `http` if that is how the server is
+    configured). `websiteIconHost` gives the host: the first URI's plain
+    ASCII host name or IPv4 address, lower-cased, and nothing else of the
+    item, so the request names a saved site (internal names and private
+    addresses included) and can be shaped by a vault entry no further. No
+    URL is ever built from a vault value alone, so an item cannot make the
+    panel request a `file:`, `qrc:` or LAN address. The rest is Qt's own
+    loader, which the plugin does not configure: it follows the service's
+    redirects under Qt's default policy (seen here on Qt 6.12: to other
+    hosts, not to `file:`; Qt documents that default as refusing `https`
+    to `http`, which was not tested), so a self-hosted or impersonated
+    icon endpoint can make the panel send a blind `GET` elsewhere; it sends its
+    stock `User-Agent` (`Mozilla/5.0`), keeps the service's cookies in
+    memory until the shell exits, and has no disk cache. It reads the whole
+    answer, picks the decoder by the bytes, not by the `.png` in the URL,
+    among every image plugin Qt has installed (SVG, PDF and others where
+    present), and keeps the scaled picture in its in-memory
+    pixmap cache under the URL; that cache is Qt's, is not emptied at
+    lock, and goes with the shell process. When the service has no icon
+    (a 404) or sends something Qt cannot decode, Qt logs the URL, and so
+    the site's name, to the journal and to Quickshell's log. All of this
+    is why the setting is opt-in and says so in its text.
+  - *The update check* (`checkForUpdates`): one `curl` a day to
+    `api.github.com`, HTTPS only also across redirects, a fixed URL, nothing
+    of the vault (`updateCheckCommand`).
 - Every `bw` run gets two Node preloads from the plugin directory through
   `NODE_OPTIONS`: `bw-login-code.js` (hands bw the two-step code without an
   argv) and `bw-fast-exit.js` (skips bw's idle time after it answers). They load
@@ -374,9 +405,9 @@ Checked against this commit's source (QML, JS, shell scripts, helper crates):
   user-started install and setup terminals above.
 - It never passes `--noconfirm` itself (Omarchy's installer does, as above),
   and it never installs from the AUR or runs `yay`, `paru` or `makepkg`.
-- The helpers open no TCP or UDP sockets. The panel's one `curl`
-  (`generateServeRequestCommand`) talks to the local `bw serve` unix socket
-  with `--noproxy '*'`.
+- The helpers open no TCP or UDP sockets. Of the panel's two `curl` calls,
+  one (`generateServeRequestCommand`) talks to the local `bw serve` unix
+  socket with `--noproxy '*'`; the other is the update check below.
 - It keeps no vault copy of its own. bw's encrypted cache lives in bw's data
   directory (for added accounts, inside
   `~/.local/share/qs-bitwarden-cli/accounts/<slot>`), and attachments you

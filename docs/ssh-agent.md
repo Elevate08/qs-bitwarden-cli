@@ -116,10 +116,6 @@ omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
 
 `omarchy-shell io.github.elevate08.qs-bitwarden-cli sshAgentStatus` reports `helperSource`, `helperChecksum` and `helperState` if you want the verdict without opening the panel.
 
-#### Known limits
-
-When a list read's key batch failed and the read that replaces it fails as well, the agent has no keys until the next list read (a refresh, a sync or a save) succeeds. A signing request that arrives in the instant the last approval is answered can be failed by the key load that follows it, and has to be run again.
-
 #### What this does not defend against
 
 - **Anything running as you.** The socket enforces the peer's UID and nothing more. A process running as you can ask for signatures -- it gets a prompt, and the cooldown limits how often it can raise one -- and it can equally replace the helper, the checksum file, and the QML that checks them. It can also answer a prompt without you: the helper takes `approve` from whoever holds its stdin, and a same-UID program can open the panel's end of that pipe through `/proc/<panel pid>/fd/` (Yama's `ptrace_scope=1` does not block that) and approve a request that is waiting. A per-request secret in the prompt would not stop it, because the prompt reaches the panel over the helper's stdout pipe, which that program can open and read the same way. Filesystem permissions own that boundary; the plugin cannot defend itself against a same-UID attacker, and neither can any other agent.
@@ -128,6 +124,12 @@ When a list read's key batch failed and the read that replaces it fails as well,
 - **Agent forwarding.** Supported only as a request you approve each time. OpenSSH 8.9 and later tells the agent when a connection carries a remote host's requests (`session-bind@openssh.com`); the prompt labels those as forwarded, and they can neither open a grant nor use one the local `ssh` already holds. A bind the helper refuses -- one it cannot parse, such as a server host key over 16 KiB, or one past OpenSSH's 16-per-connection limit -- is treated as forwarding too, because OpenSSH carries on after a refused bind: otherwise a hostile server could hide that its requests are relayed and have them answered by the local `ssh`'s grant. The program the prompt shows is the local `ssh` relaying the request, not the one that will use the signature. Forwarded connections list their keys without item names, so a remote host cannot read your vault's item names with `ssh-add -l`. An older client does not say, so its forwarded requests look like its own -- use `ForwardAgent` only with a current OpenSSH.
 - **Erasure.** Secret memory is zeroized on a best-effort basis and the helper disables core dumps and `PR_SET_DUMPABLE` before the first key is read, but nothing can guarantee that a page freed by an allocator or swapped by the kernel is gone. The helper does not lock its memory, so a key can be written to swap while it is loaded; encrypted swap, or zram with no disk swap, avoids that.
 - **Root, and the vault itself.** Root reads any process's memory. Separately, `bw` is the source of the keys and holds its own decrypted copies while it runs.
+
+#### Known limits
+
+- When a list read's key batch failed and the read that replaces it fails as well, the agent has no keys until the next list read (a refresh, a sync or a save) succeeds.
+- A signing request that arrives in the instant the last approval is answered can be failed by the key load that follows it, and has to be run again.
+- A signing request that waited for an unlock is given a new number by the helper once the vault opens. The helper says which request the new number belongs to and goes on answering to the old one until the panel has it, so an answer given in that instant (on the card, from a notification or with `sshReply`) reaches the request it was given for. With an SSH agent helper from before 2.0 -- which the panel only meets when the two do not come from the same release -- a **Deny** pressed in that instant is lost, and the request is shown again, after any other request already waiting, to be denied again. Either way the request keeps the two minutes its client was first given, while the card that asks about it after the unlock counts from two minutes again, so that card may show more time than the request has left.
 
 #### Turning it off
 

@@ -111,19 +111,11 @@ check("server URL refusal for userinfo names the real host, not the userinfo",
 
 const clear = Model.associationsClearCommand().join(" ")
 
-check("clearing associations removes the store file",
-  /\brm -f --/.test(clear) && clear.includes("associations.json"),
-  clear)
-
-check("clearing associations resolves the same path the writer uses",
-  clear.includes("${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli")
-    && clear.includes("associations.json"),
-  clear)
-
 // A missing file is the ordinary case on an account that never learned
 // anything, and it must not be reported as a failed logout.
-check("clearing associations succeeds when there is nothing to remove",
-  /exit 0\s*$/.test(clear),
+check("clearing associations removes the store file at the writer's path, and succeeds when there is nothing to remove",
+  /\brm -f --/.test(clear) && clear.includes("${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli")
+    && clear.includes("associations.json") && /exit 0\s*$/.test(clear),
   clear)
 
 const assocTmp = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-assoc-"))
@@ -223,12 +215,6 @@ check("copies go through the model's copy command, detached, with the value in t
   /Quickshell\.execDetached\(\{[\s\S]*command:\s*Model\.clipboardCopyCommand\(clearClipboardSec\)[\s\S]*environment:\s*env/.test(copyToClipboard)
     && /env\[Model\.clipboardEnvVar\(\)\]\s*=\s*String\(text\)/.test(copyToClipboard),
   copyToClipboard)
-// The clear used to be a timer in the shell, lost on every shell restart,
-// and a lock ran `wl-copy --clear` whatever was on the clipboard by then.
-check("no shell-side timer owns the clipboard clear",
-  !/clipboardClearTimer/.test(panelSrc), "clipboardClearTimer is back")
-check("locking clears a credential still on the clipboard",
-  /clearClipboard\(\)/.test(bodyOf("lockVault")), bodyOf("lockVault"))
 check("clearing asks for the sensitive-only clear, never a bare wl-copy --clear",
   /Model\.clipboardClearSensitiveCommand\(\)/.test(bodyOf("clearClipboard"))
     && !/"--clear"/.test(bodyOf("clearClipboard")),

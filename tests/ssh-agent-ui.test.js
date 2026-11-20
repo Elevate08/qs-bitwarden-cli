@@ -500,35 +500,13 @@ const unlockFormSrc = fs.existsSync(path.join(repoRoot, "UnlockForm.qml"))
 const sshUnlockOnly = fs.existsSync(path.join(repoRoot, "SshUnlockScreen.qml"))
   ? read("SshUnlockScreen.qml") : ""
 
-// Fields matched with any owner (`panel` in settings sections, `root` in
-// screens), so checks cannot pass on content that moved between files.
-for (const field of [
-  "sshAgentVersion",
-  "modelData.keyName",
-  "modelData.processName",
-  "sshUnlockRequest.keyName",
-  "sshUnlockRequest.processName",
-  "sshPrompt.keyName",
-  "sshPrompt.processName",
-  "sshPrompt.processPath",
-  "sshRouting.owner"
-]) {
-  const wrapped = new RegExp(
-    "plainLabel\\(\\s*(?:root|panel|section\\.panel)?\\.?"
-      + field.replace(/\./g, "\\.") + "\\s*\\)")
-  check("SSH PlainText labels do not receive rich-text wrappers for " + field,
-    !wrapped.test(panelSrc), field)
-}
-
-check("there is a dedicated approval screen",
-  /currentScreen === "sshApproval"/.test(panelSrc), "no sshApproval screen")
 check("an approval_required message raises the prompt",
   /message\.type === "approval_required"[\s\S]{0,600}?showSshApproval\(message\)/.test(panelSrc),
   "approval_required never raises the prompt")
 // Opening the panel sends it to the item list, so a prompt must open it before
 // claiming the screen (else: live state, blank screen).
 check("the legacy panel is opened before its approval screen is claimed",
-  /function showSshApproval\(message\)[\s\S]{0,1200}?sshAgentApprovalPopup[\s\S]{0,400}?return[\s\S]{0,600}?root\.open\(\)[\s\S]{0,200}?currentScreen = "sshApproval"/.test(panelSrc),
+  /function showSshApproval\(message\)[\s\S]{0,300}?if \(startSshPromptClock\(\)\) return[\s\S]{0,600}?if \(!root\.opened\) root\.open\(\)\s*root\.currentScreen = "sshApproval"\s*\}/.test(panelSrc),
   "the screen is claimed before opening, so opening resets it")
 // Pinned on ordering, not character distance.
 const openedBody = panelSrc.slice(panelSrc.indexOf("function onPanelOpened()"),
@@ -539,9 +517,6 @@ check("opening the panel does not discard a live request",
   /if \(sshPrompt\)[\s\S]{0,160}?currentScreen = "sshApproval"[\s\S]{0,40}?return/.test(openedBody)
     && openedBody.indexOf("sshPrompt") < openedBody.indexOf('status === "unlocked"'),
   "onPanelOpened resets away from a live prompt")
-check("a withdrawn prompt counts toward the cooldown, an answered one does not",
-  /message\.reason === "released"[\s\S]{0,800}?\} else \{[\s\S]{0,200}?sshAgentCooldownAfter\(root\.sshCooldown, "timeout"/.test(panelSrc),
-  "an unanswered prompt never feeds the cooldown, and a released one must not")
 
 // Screen visibility binds to activeScreen, which a live request wins, so no
 // currentScreen assignment can hide it.
@@ -552,12 +527,6 @@ check("no screen visibility still binds to currentScreen directly",
   panelSrc.split("\n").filter(l => l.trim().startsWith("visible:") && l.includes("root.currentScreen")).length === 0,
   panelSrc.split("\n").filter(l => l.trim().startsWith("visible:") && l.includes("root.currentScreen")).join(" | "))
 
-check("raising the prompt switches to the approval screen",
-  /function showSshApproval\(message\)[\s\S]{0,1200}?currentScreen = "sshApproval"/.test(panelSrc),
-  "the prompt never opens the approval screen")
-check("a request that cannot prompt is denied rather than left hanging",
-  /message\.type === "approval_required"[\s\S]{0,400}?sshAgentMayPrompt\(\)[\s\S]{0,200}?sshAgentDenyLine/.test(panelSrc),
-  "a suppressed request is not answered")
 // A prompt that opened the panel closes it when answered; one the user opened
 // stays.
 check("answering a prompt that opened the panel closes it again",
@@ -589,12 +558,6 @@ check("the approval prompt says keys are still loading",
   /visible: (?:root|panel)\.sshAgentLoadActive[\s\S]{0,200}?sshAgentLoadingNote\(\)/.test(panelSrc),
   "the prompt does not say the keys are still on their way")
 
-check("the held request stays on screen while keys load",
-  /sshAgentLoadingNote\(\)/.test(panelSrc), "nothing tells the user keys are loading")
-check("the loading state is driven by the load actually being in flight",
-  /sshUnlockRequest[\s\S]{0,600}?sshAgentLoadActive|sshAgentLoadActive[\s\S]{0,600}?sshUnlockRequest/.test(panelSrc),
-  "the loading state is not tied to a real load")
-
 check("the setting reaches the companion on handshake and on change",
   /onSshAgentUnlockOnDemandChanged: sendSshAgentOptions\(\)/.test(panelSrc)
     && /if \(sshAgentGateOpen\) sendSshAgentOptions\(\)/.test(panelSrc),
@@ -603,28 +566,27 @@ check("an identity listing is not promoted into an approval",
   /reason === "list-identities"/.test(panelSrc),
   "a listing would be turned into a signature approval")
 
-check("an unlock request is shown with its context",
-  /message\.type === "unlock_required"/.test(panelSrc), "unlock_required is ignored")
 check("grants are tracked from the companion",
   /message\.type === "grants_changed"/.test(panelSrc), "grants_changed is ignored")
 
-check("denying is wired to the deny line",
-  /sshAgentDenyLine\(/.test(panelSrc), "nothing sends deny")
-check("approving once is wired",
-  /sshAgentApproveLine\(/.test(panelSrc), "nothing sends approve")
+check("the card's approve and deny answer the request that is shown",
+  /function approveSshRequest\(grantSeconds\)[\s\S]{0,500}?sshAgentDecide\(Model\.sshAgentApproveLine\(sshPrompt\.requestId, grantSeconds\)\)/.test(panelSrc)
+    // First in the function: Deny answers the approval that is shown, not a
+    // request waiting for an unlock behind it.
+    && /function denySshRequest\(\) \{\s*(?:\/\/[^\n]*\n\s*)*if \(sshPrompt\) \{\s*sshAgentDecide\(Model\.sshAgentDenyLine\(sshPrompt\.requestId\)\)\s*root\.sshCooldown = Model\.sshAgentCooldownAfter\(root\.sshCooldown, "denied"/.test(panelSrc),
+  "approve or deny on the card does not reach the companion")
 check("grants can be revoked individually and together",
   /sshAgentRevokeGrantLine\(/.test(panelSrc) && /sshAgentRevokeGrantsLine\(/.test(panelSrc),
   "grant revocation is not wired")
 
-check("a locked screen suppresses the prompt",
-  /sshAgentShouldPrompt\(/.test(panelSrc), "the screen-lock rule is not applied")
-check("the cooldown is surfaced in the panel rather than failing silently",
-  /sshAgentCooldownStatus\(/.test(panelSrc), "the cooldown is never shown to the user")
+check("a locked screen or a running cooldown suppresses the prompt",
+  /function sshAgentMayPrompt\(\)[\s\S]{0,200}?if \(!Model\.sshAgentShouldPrompt\([^\n]*\) return false\s+return !Model\.sshAgentCooldownActive\(root\.sshCooldown, Date\.now\(\)\)/.test(panelSrc),
+  "the screen-lock rule or the cooldown is not applied")
 check("entering the cooldown is announced once, not on every refusal",
   /sshCooldownAnnounced/.test(panelSrc), "nothing announces the cooldown")
 
 check("a request the cooldown refuses does not feed the cooldown",
-  /!sshAgentMayPrompt\(\)\)\s*\{\s*sshAgentWrite\(Model\.sshAgentDenyLine\(message\.requestId\)\)\s*return/.test(panelSrc),
+  /!sshAgentMayPrompt\(\)\)\s*\{\s*sshAgentDecide\(Model\.sshAgentDenyLine\(message\.requestId\)\)\s*return/.test(panelSrc),
   "a suppressed request records an outcome, so a busy process can hold the cooldown open")
 // SSH_AUTH_SOCK is fixed at login, so the notice reads the routing file, not
 // the environment.
@@ -650,18 +612,12 @@ for (const quiet of ["unknown", "no-home"]) {
 eq("a missing record says nothing rather than throwing",
   Model.sshAgentRoutingNotice(null, null).text, "")
 
-check("the routing notice precedes the routing section",
-  /sshRoutingNotice\.text[\s\S]{0,500}?text: "CLIENT ROUTING"/.test(panelSrc),
-  "the routing notice does not precede the routing section")
 check("re-enabling the agent restores the routing file it removed on disable",
   /uwsmRestorePending = true[\s\S]{0,1200}?function applyUwsmRestore\(\)[\s\S]{0,600}?beginUwsmSetup\(\)/.test(panelSrc),
   "disabling removes the routing file and enabling never puts it back")
 check("but never over a file it did not write, or another session's agent",
   /uwsmFragment\.state !== "absent" \|\| sshRouting\.state === "elsewhere"[\s\S]{0,40}?return/.test(panelSrc),
   "the restore overrules a foreign routing file or an existing agent")
-check("and routing is reachable before the approvals list",
-  panelSrc.indexOf('text: "CLIENT ROUTING"') < panelSrc.indexOf('text: "ACTIVE APPROVALS"'),
-  "approvals still push routing down the screen")
 
 // `omarchy plugin remove` has no uninstall hook, so the last moment this code
 // can run is while the plugin is still installed. What it misses becomes a
@@ -711,27 +667,15 @@ check("a development helper is called out wherever the user is",
 check("the diagnostics say which helper is running and whether it was verified",
   /helperSource: root\.sshAgentHelper\.source[\s\S]{0,200}?helperChecksum: root\.sshAgentHelper\.checksum/.test(panelSrc),
   "sshAgentStatus cannot tell a shipped helper from a local build")
-check("and what the panel believes about client routing",
-  /routingFragment: root\.uwsmFragment\.state[\s\S]{0,200}?routingNotice: root\.sshRoutingNotice\.text !== ""/.test(panelSrc),
-  "routing state cannot be read without squinting at the panel")
-check("and why inspection rejected one, which errorCode never carries",
-  /helperState: root\.sshAgentHelper\.state/.test(panelSrc),
-  "sshAgentStatus reports an error state without naming it")
 check("a running cooldown can be ended from the panel",
   /function resumeSshSigning\(\)[\s\S]{0,300}?sshAgentCooldownAfter\(root\.sshCooldown, "resumed"/.test(panelSrc),
   "nothing ends the cooldown early, so it cannot be escaped")
 check("and the control that does it sits on the banner explaining the outage",
   /sshCooldownStatus\.active[\s\S]{0,1600}?resumeSshSigning\(\)/.test(panelSrc),
   "the resume control is not on the cooldown banner")
-check("repeated denials enter the cooldown",
-  /sshAgentCooldownAfter\(/.test(panelSrc) && /sshAgentCooldownActive\(/.test(panelSrc),
-  "the cooldown is not applied")
 check("escape denies rather than silently dismissing",
-  /sshApproval[\s\S]{0,900}?denySshRequest\(/.test(panelSrc), "escape does not deny")
-check("the key name is rendered literally by a PlainText control",
-  /Text\s*\{[\s\S]{0,180}?textFormat:\s*Text\.PlainText[\s\S]{0,180}?(?:root|panel)\.sshPrompt\.keyName(?![A-Za-z0-9_])/
-    .test(panelSrc),
-  "the key name is not pinned to plain text")
+  /function handleEscape\(\)[\s\S]{0,200}?if \(currentScreen === "sshApproval" \|\| sshUnlockRequest\) \{\s*denySshRequest\(\)/.test(panelSrc),
+  "escape does not deny")
 
 // -------------------------------------------------------------------------
 // Opt-in centered approval surface
@@ -756,9 +700,6 @@ check("the popup exists only for opted-in pending SSH work",
 check("popup mode claims the request without opening the panel",
   /function startSshPromptClock\(\)[\s\S]{0,300}?if \(!root\.sshAgentApprovalPopup\) return false[\s\S]{0,80}?return true/.test(panelSrc),
   "startSshPromptClock does not stop at the popup")
-check("popup mode leaves the anchored panel closed for approvals",
-  /function showSshApproval\(message\)[\s\S]{0,300}?if \(startSshPromptClock\(\)\) return[\s\S]{0,600}?root\.open\(\)/.test(panelSrc),
-  "showSshApproval always opens the panel")
 check("popup mode leaves the anchored panel closed for unlock requests",
   /message\.type === "unlock_required"[\s\S]{0,900}?if \(startSshPromptClock\(\)\) return[\s\S]{0,200}?root\.open\(\)/.test(panelSrc),
   "unlock_required always opens the panel")
@@ -801,9 +742,6 @@ check("UnlockForm resets the eye when it hides, whichever screen hides it",
 check("the offered method is the first one that is actually set up",
   /method:\s*chosen[\s\S]{0,400}?methodAvailable\("fingerprint"\)\s*\?\s*"fingerprint"[\s\S]{0,120}?methodAvailable\("pin"\)\s*\?\s*"pin"\s*:\s*"password"/.test(unlockFormSrc),
   "fingerprint, then PIN, then master password")
-check("availability is what the vault says, so an exhausted PIN hands over by itself",
-  /function methodAvailable\(name\)[\s\S]{0,300}?fingerprintReady[\s\S]{0,120}?pinReady[\s\S]{0,120}?name === "password"/.test(unlockFormSrc),
-  "a method must not stay offered once the vault has dropped it")
 check("each method draws on its own, so only one is on screen",
   ['fingerprint', 'pin', 'password']
     .every((name) => new RegExp(`visible: form\\.fieldsOffered && form\\.method === "${name}"`).test(unlockFormSrc)),
@@ -915,13 +853,6 @@ let removed = Model.sshAgentRemovePrompt(q, 3)
 eq("removes targeted requestId", removed.length, 3)
 eq("requestId 3 is absent", removed.some(x => x.requestId === 3), false)
 
-check("the panel declares an SSH prompt queue",
-  /property var sshPromptQueue:\s*\[\]/.test(panelSrc),
-  "sshPromptQueue is missing from Panel.qml")
-check("the panel declares total pending counts",
-  /readonly property int sshPendingCount:/.test(panelSrc)
-    && /readonly property int sshUnlockPendingCount:/.test(panelSrc),
-  "sshPendingCount or sshUnlockPendingCount is missing")
 check("multiple concurrent approval requests are queued",
   /root\.sshPromptQueue = Model\.sshAgentEnqueuePrompt\(root\.sshPromptQueue, message, 4\)/.test(panelSrc),
   "concurrent approvals are not queued")

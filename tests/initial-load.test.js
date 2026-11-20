@@ -34,13 +34,6 @@ check("an early read never feeds the SSH agent",
   /listReadEarly\s*=\s*status\s*!==\s*"unlocked"/.test(startRead)
     && /useAgent\s*=\s*!retrying\s*&&\s*!listReadEarly/.test(startRead),
   startRead)
-const loadItemsBody = bodyOf("loadItems")
-// The early read is one case of a read already running for this vault
-// (vaultReadRunning()); tests/list-races.test.js runs it.
-check("a confirmed load waits on the early read instead of starting another",
-  /if \(vaultReadRunning\("items", listProc\) && listReadChanges === vaultChanges\) return/.test(loadItemsBody)
-    && /return proc\.running && !Model\.isScrubCommand\(proc\.command\) && !vaultReadIsStale\(name\)/.test(bodyOf("vaultReadRunning")),
-  loadItemsBody)
 const statusDone = bodyOf("onStatusFinished")
 check("a confirmed unlock starts the metadata the early read held back",
   /ensureItemsFresh\(\)\s*\n\s*\/\/[^\n]*\n\s*loadPendingMetadata\(\)/.test(statusDone),
@@ -48,9 +41,8 @@ check("a confirmed unlock starts the metadata the early read held back",
 
 for (const source of ["onUnlockSuccess", "onSessionHandoff"]) {
   const body = bodyOf(source)
-  check(`${source} uses the items-first entry point`, /beginInitialVaultLoad\(/.test(body), body)
-  check(`${source} does not launch organization metadata directly`, !/loadOrganizations\(/.test(body), body)
-  check(`${source} does not launch folder metadata directly`, !/loadFolders\(/.test(body), body)
+  check(`${source} starts the vault through the items-first entry point only`,
+    /beginInitialVaultLoad\(/.test(body) && !/loadOrganizations\(/.test(body) && !/loadFolders\(/.test(body), body)
 }
 
 const listFinished = bodyOf("onListFinished")
@@ -122,21 +114,19 @@ const listProcessStart = panelSrc.indexOf("id: listProc")
 const listProcess = listProcessStart === -1 ? "" : panelSrc.slice(listProcessStart, listProcessStart + 900)
 check("the item process waits for onExited instead of racing its stdout and stderr handlers",
   /onExited:[\s\S]*onListProcessExited/.test(listProcess)
-    && !/onStreamFinished:[\s\S]*onListFinished/.test(listProcess),
+    && !/(?:onStreamFinished|onCollected):[\s\S]*onListFinished/.test(listProcess),
   listProcess)
 
 const processBlock = id => {
   const idAt = panelSrc.indexOf(`id: ${id}`)
   if (idAt === -1) return ""
-  const next = panelSrc.indexOf("\n  Process {", idAt)
-  return panelSrc.slice(idAt, next === -1 ? panelSrc.length : next)
+  const next = panelSrc.slice(idAt).search(/\n  (?:Text)?Process \{/)
+  return panelSrc.slice(idAt, next === -1 ? panelSrc.length : idAt + next)
 }
-for (const id of ["statusProc", "sessionHandoffProc", "listOrgsProc", "listFoldersProc",
+const racing = ["statusProc", "sessionHandoffProc", "listOrgsProc", "listFoldersProc",
                   "orgCollectionsProc", "listSendsProc", "keyringLookupMasterProc",
-                  "getItemProc", "getTotpProc"]) {
-  const block = processBlock(id)
-  check(`${id} accepts output only after its exit status is known`,
-    /onExited:/.test(block) && !/onStreamFinished:/.test(block), block)
-}
+                  "getItemProc", "getTotpProc"]
+  .filter(id => !/onExited:/.test(processBlock(id)) || /onStreamFinished:|onCollected:/.test(processBlock(id)))
+check("every reader accepts output only after its exit status is known", racing.length === 0, racing.join(", "))
 
 done()

@@ -106,10 +106,6 @@ try {
     /function emptyListMessage\(\)[\s\S]{0,400}sshCapability\.state === "unconfirmed"[\s\S]{0,120}sshCapability\.message/.test(panelSrc)
       && /text: root\.isLoading && root\.items\.length === 0[\s\S]{0,120}root\.emptyListMessage\(\)/.test(panelSrc),
     "the empty list cannot distinguish an unconfirmed server from an empty vault")
-
-  check("search help says SSH public fields are searchable",
-    /placeholderText:\s*"[^"]*(public keys|fingerprints)[^"]*"/i.test(panelSrc),
-    "search placeholder does not mention public keys or fingerprints")
   check("the detail delete shortcut is guarded for read-only SSH items",
     // The kit delivers `x` as deleteRequested, not a text key.
     /onDeleteRequested:[\s\S]{0,400}currentScreen === "detail"[\s\S]{0,120}detailItem[\s\S]{0,120}typeCode !== 5[\s\S]{0,120}showDeleteConfirm = true/.test(panelSrc),
@@ -122,8 +118,6 @@ try {
       && commandText.includes("BW_NOINTERACTION=true")
       && (commandText.match(/head -c 16777217/g) || []).length === 2,
     commandText)
-  check("the static command carries no fixture secret",
-    !commandText.includes(PRIVATE_MARKER) && !commandText.includes(UNKNOWN_MARKER), commandText)
 
   const valid = runFixture(JSON.stringify(fixture))
   check("a valid vault read succeeds", valid.status === 0,

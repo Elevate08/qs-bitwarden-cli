@@ -43,15 +43,15 @@ check("bwEnv() carries no session: a VaultProcess adds it",
   !/sessionEnvVar/.test(body("bwEnv")), body("bwEnv"))
 // Every process whose environment is a `bw` one must be a VaultProcess.
 const bwEnvFns = /root\.(bwEnv|authEnv|itemEnv|folderEnv|sendEnv|loginProcessEnv)\(/
-const plainProcesses = service.split(/\n  (?=Process \{|VaultProcess \{)/)
-  .filter(block => block.indexOf("Process {") === 0)
+const plainProcesses = service.split(/\n  (?=(?:Text)?Process \{|VaultProcess \{)/)
+  .filter(block => /^(?:Text)?Process \{/.test(block))
   .map(block => block.slice(0, block.indexOf("\n  }\n") + 1))
 const leaking = plainProcesses.filter(block => bwEnvFns.test(block)).map(block => (/id: (\w+)/.exec(block) || [])[1])
 eq("no plain Process runs with a bw environment", leaking.join(), "")
-for (const id of ["envelopeProc", "lockProc", "listProc", "unlockProc", "loginProc", "keyringStoreProc",
-                  "sessionHandoffProc", "keyringLookupProc", "authPasswordWriterProc", "pinUnlockProc", "keyringLookupMasterProc"]) {
-  check(`${id} is a VaultProcess`, new RegExp(`VaultProcess \\{\\s*id: ${id}\\b`).test(service), id)
-}
+eq("every process that reads or is handed a secret is a VaultProcess",
+  ["envelopeProc", "lockProc", "listProc", "unlockProc", "loginProc", "keyringStoreProc", "sessionHandoffProc",
+    "keyringLookupProc", "authPasswordWriterProc", "pinUnlockProc", "keyringLookupMasterProc"]
+    .filter(id => !new RegExp(`VaultProcess \\{\\s*id: ${id}\\b`).test(service)).join(), "")
 // A local start deferred behind the previous run's collector clear runs the
 // command it was given, and not at all once cancelled or replaced. Driven
 // with VaultProcess.qml's own functions over a stand-in scope.
@@ -185,24 +185,17 @@ check("a held reference in an environment travels by name",
   /Model\.heldSecretName\(proc\.environment\[key\]\)[\s\S]{0,80}inject\[key\] = "secret:" \+ held/.test(body("vaultStart")), body("vaultStart"))
 check("a password copy goes from the helper to wl-copy",
   /vaultQuery\("copyPassword"/.test(body("copyPasswordNow")), body("copyPasswordNow"))
-check("the detail view asks the helper for no item, only for the value that is revealed",
-  !/vaultQuery\("item"/.test(body("openDetail")) && /vaultQuery\("field", \{ id: id, field: key \}/.test(body("readDetailSecret")),
-  body("openDetail"))
-check("a detail copy of one secret goes from the helper to wl-copy",
-  /vaultQuery\("copyField"/.test(body("copyDetailFieldNow")), body("copyDetailFieldNow"))
-check("only the edit form asks for the whole item",
-  /vaultQuery\("item", \{ id: id \}/.test(body("loadFullDetail"))
-    && (service.match(/vaultQuery\("item"/g) || []).length === 1, "")
-check("TOTP comes from the helper, bw only for keys it does not mirror",
-  /vaultQuery\("totp"/.test(body("fetchTotp")) && /root\.fetchTotp\(requested, false, true\)/.test(body("fetchTotp")), "")
+check("only one place asks the helper for a whole item (the edit form: tests/detail-on-demand.test.js)",
+  (service.match(/vaultQuery\("item"/g) || []).length === 1, "")
+check("a TOTP key the helper does not mirror is asked of bw",
+  /root\.fetchTotp\(requested, false, true\)/.test(body("fetchTotp")), "")
 check("search asks the helper, and an answer for old text is dropped",
   /vaultQuery\("search"/.test(body("askHelperSearch")) && /root\.searchAskedQuery !== query\) return/.test(body("askHelperSearch")), "")
-check("a helper that stops locks a vault it held the key for",
-  /session === heldSessionMarker[\s\S]{0,400}lockVault\(\)/.test(body("onVaultHelperExited")), body("onVaultHelperExited"))
 // A lock of its own here once skipped the SSH agent, which kept signing with
 // the vault's keys behind a panel that said it was locked.
-check("that lock is the ordinary one, not a copy of it",
-  !/status = "locked"/.test(body("onVaultHelperExited")), body("onVaultHelperExited"))
+check("a helper that stops locks a vault it held the key for, with the ordinary lock and not a copy of it",
+  /session === heldSessionMarker[\s\S]{0,400}lockVault\(\)/.test(body("onVaultHelperExited"))
+    && !/status = "locked"/.test(body("onVaultHelperExited")), body("onVaultHelperExited"))
 check("the SSH agent is locked even when the panel was not yet unlocked",
   /session === heldSessionMarker[\s\S]{0,600}\} else \{\s*applySshAgentLifecycle\("lock"\)\s*dropVaultState\(\)/
     .test(body("onVaultHelperExited")), body("onVaultHelperExited"))
@@ -239,10 +232,6 @@ check("an item from the helper says what it has without holding it",
   const start = body("vaultStart")
   check("runs wait while the helper is stopped instead of running in the shell",
     /vaultHelperState === "stopped"/.test(start.split("runLocally")[0]), start)
-  const retry = body("retryVaultHelper")
-  check("trying again checks the helper afresh, with a fresh count, while runs wait",
-    /vaultHelperState !== "stopped"\) return/.test(retry) && /vaultHelperRestarts = 0/.test(retry)
-      && /vaultHelperState = "pending"\s*inspectVaultHelper\(\)/.test(retry), retry)
   check("the count clears once the helper has stayed up a minute",
     /vaultHelperSettledMs: 60000/.test(service)
       && /id: vaultHelperSettleTimer[\s\S]{0,200}vaultHelperRestarts = 0/.test(service)

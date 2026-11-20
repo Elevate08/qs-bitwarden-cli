@@ -39,8 +39,8 @@ if (!process.argv.includes('--isolated')) {
   const daemon = spawn('gnome-keyring-daemon', ['--foreground', '--unlock', '--components=secrets',
     '--control-directory', root + '/control'], { stdio: [input, 'ignore', 'ignore'] })
   fs.closeSync(input)
-  const store = (account, value) => run(['bash', '-c', Model.keyringStoreScript('Disposable test',
-    account)], { [Model.keyringSecretEnvVar()]: value })
+  const store = (account, value) => run(['bash', '-c', "printf '%s' \"$" + Model.KEYRING_SECRET_ENV
+    + "\" | secret-tool store --label='Disposable test'" + Model.keyringAttributes(account)], { [Model.keyringSecretEnvVar()]: value })
   const lookup = account => run(Model.keyringLookupEntryCommand(account))
   try {
     sleep(1000) // Let the daemon claim the bus before a client can auto-activate another.

@@ -9,10 +9,12 @@ const { createSuite, read, readPluginSource } = require("./harness")
 
 const panelSrc = readPluginSource("Panel.qml")
 const wheelSrc = read("WheelScroll.qml")
+// The panel's scrolling view: its own wheel handler and scrollbar, so a view
+// built from it has both.
+const flickSrc = read("PanelFlick.qml")
+const flickViews = (panelSrc.match(/PanelFlick \{/g) || []).length
 
 const { check, done } = createSuite("scrolling")
-
-check("WheelScroll exists", wheelSrc !== "", "WheelScroll.qml is missing")
 
 // --- the component ------------------------------------------------------------
 
@@ -49,16 +51,20 @@ const scrollViews = [
 
 for (const view of scrollViews) {
   check(`${view} scrolls at the panel's rate`,
-    new RegExp(`WheelScroll \\{ view: ${view} \\}`).test(panelSrc),
+    new RegExp(`WheelScroll \\{ view: ${view} \\}|PanelFlick \\{\\s*id: ${view}\\n`).test(panelSrc),
     `${view} still scrolls at the platform default`)
 }
 
+check("the panel's scrolling view carries the wheel handler and a scrollbar",
+  /WheelScroll \{ view: flick \}/.test(flickSrc) && /ScrollBar\.vertical: ScrollBar \{ policy: ScrollBar\.AsNeeded \}/.test(flickSrc),
+  flickSrc)
+
 check("every scrolling view is accounted for",
-  (panelSrc.match(/WheelScroll \{/g) || []).length === scrollViews.length,
-  `${(panelSrc.match(/WheelScroll \{/g) || []).length} handlers for ${scrollViews.length} views`)
+  (panelSrc.match(/WheelScroll \{/g) || []).length + flickViews === scrollViews.length,
+  `${(panelSrc.match(/WheelScroll \{/g) || []).length + flickViews} handlers for ${scrollViews.length} views`)
 
 check("and every one of them has a scrollbar, so the list is the same list",
-  (panelSrc.match(/ScrollBar\.vertical:/g) || []).length === scrollViews.length,
+  (panelSrc.match(/ScrollBar\.vertical:/g) || []).length + flickViews === scrollViews.length,
   "a view with a scrollbar but no wheel tuning would scroll at a different rate")
 
 done()

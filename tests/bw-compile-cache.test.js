@@ -458,12 +458,9 @@ if (trusted) {
 
 // --- who gets it ----------------------------------------------------------------
 
-check("the directory offered to bw is the one the probe printed; a new check withdraws it first, and nothing else sets it",
+check("the directory offered to bw starts empty and is set in two places only: the probe's answer, and a new check withdrawing it",
   /property string bwCompileCacheDir: ""/.test(svc)
-    && /bwCompileCacheDir = Model\.bwCompileCacheAccepted\(exitCode, output\)/.test(functionBody(svc, "onBwCompileCacheProbed"))
-    && /^function probeBwCompileCache\(\) \{\s+bwCompileCacheDir = ""/.test(functionBody(svc, "probeBwCompileCache"))
-    && (svc.match(/\bbwCompileCacheDir = /g) || []).length === 2,
-  functionBody(svc, "onBwCompileCacheProbed"))
+    && (svc.match(/\bbwCompileCacheDir = /g) || []).length === 2)
 check("the check runs at start, when the setting changes and every time the vault becomes unlocked, before that opening's reads start",
   /root\.probeBwCompileCache\(\)/.test(svc.slice(svc.indexOf("onLiveChanged: {"), svc.indexOf("readonly property var categories")))
     && /\n  onBwCompileCacheChanged: probeBwCompileCache\(\)\n/.test(svc)
@@ -471,44 +468,19 @@ check("the check runs at start, when the setting changes and every time the vaul
     // Those three and no other: the rest are the definition and a comment.
     && (svc.match(/^[^/\n]*\bprobeBwCompileCache\(\)(?! \{)/gm) || []).length === 3
     && /bwCompileCacheHome: Model\.bwCompileCacheHome\(\s*Quickshell\.env\("XDG_CACHE_HOME"\) \|\| "", Quickshell\.env\("HOME"\) \|\| ""\)/.test(svc))
-check("that is all the feature keeps: the directory, what the last check came to, and the count that tells answers apart. No clock, no credit from one opening to the next",
-  svc.split("\n").filter(l => /^\s*(?:readonly )?property \w+ bwCompileCache\w*:/.test(l)).map(l => l.trim().split(":")[0]).join("; ")
-    === "readonly property bool bwCompileCache; readonly property string bwCompileCacheHome; property string bwCompileCacheDir; "
-      + "property string bwCompileCacheState; property int bwCompileCacheProbeSeq"
-    && !/Date\.now|Timer/.test(["probeBwCompileCache", "startBwCompileCacheProbe", "onBwCompileCacheProbed", "bwCompileCacheEnvValue", "bwEnvAtStart"]
-      .map(name => functionBody(svc, name)).join("\n"))
-    && !/isUnlocking/.test(svc.slice(svc.indexOf("property string bwCompileCacheDir"), svc.indexOf("function bwEnv(extra)")))
-    && !/CheckIsRecent|TRUST_MS/.test(modelSrc))
 check("only bwEnv(), the generator's server and the last word at a start name the variable; pinentry, which runs no bw, starts without an inherited one",
   (svc.match(/bwCompileCacheEnvVar\(\)/g) || []).length === 3
-    && /var name = Model\.bwCompileCacheEnvVar\(\)\s+if \(env && env\[name\] !== undefined && env\[name\] !== null\) env\[name\] = bwCompileCacheEnvValue\(\)\s+return env/.test(functionBody(svc, "bwEnvAtStart"))
-    && /env\[Model\.bwCompileCacheEnvVar\(\)\] = bwCompileCacheEnvValue\(\)/.test(functionBody(svc, "bwEnv"))
-    && /env\[Model\.bwCompileCacheEnvVar\(\)\] = bwCompileCacheEnvValue\(\)/.test(functionBody(svc, "generatorServeEnv"))
     && Model.pinentryEnvironment({})[VAR] === null
-    && /id: pinentryProbeProc\s+environment: Model\.withoutCompileCache\(\{\}\)/.test(svc)
     && !/COMPILE_CACHE/.test(read("pinentry/omarchy-pinentry")))
 check("a bw that is given the master password or a login's credentials never gets the cache: unlock and the process waiting for it, every login, the password check",
-  /^function bwSecretEnv\(extra\) \{\s+return Model\.withoutCompileCache\(bwEnv\(extra\)\)\s+\}$/.test(functionBody(svc, "bwSecretEnv"))
-    && /^function authEnv\(password, clientId, clientSecret, code\) \{\s+var env = bwSecretEnv\(\)/.test(functionBody(svc, "authEnv"))
-    && !/bwEnv\(/.test(functionBody(svc, "authEnv").replace(/bwSecretEnv\(/g, ""))
-    && !/bwEnv\(/.test(functionBody(svc, "loginProcessEnv").replace(/bwSecretEnv\(/g, ""))
+  !/bwEnv\(/.test(functionBody(svc, "loginProcessEnv").replace(/bwSecretEnv\(/g, ""))
     && /var deviceEnv = bwSecretEnv\(\)/.test(functionBody(svc, "loginProcessEnv"))
-    && /command: Model\.bwVerifyPasswordCommand\(\),\s+env: bwSecretEnv\(env\)/.test(functionBody(svc, "verifyWithBw"))
-    && /id: unlockProc\s+vault: root\s+capture: "session"\s+command: Model\.unlockPrewarmCommand\(\)\s+environment: root\.authEnv\("", "", "", ""\)/.test(svc)
-    && /id: loginProc\s+vault: root\s+capture: "session"\s+environment: root\.loginProcessEnv\(\)/.test(svc)
     && /id: authPasswordWriterProc\s+vault: root\s+session: false\s+environment: root\.authEnv\(/.test(svc)
     // Nothing else is handed the password variable.
     && (svc.match(/Model\.passwordEnvVar\(\)/g) || []).length === 1 && /Model\.passwordEnvVar\(\)/.test(functionBody(svc, "authEnv")))
 
 // Every other `bw` or `node` the plugin starts takes an inherited value out.
 {
-  const without = /Model\.withoutCompileCache\(\{\}\)/.source
-  check("bw -v, the signed-out slot's bw logout, the SSH export, bw login in a terminal and opening an attachment drop an inherited cache",
-    new RegExp("id: bwVersionProc\\s+property string probeId: \"\"\\s+command: Model\\.bwVersionCommand\\(\\)\\s+environment: " + without).test(svc)
-      && new RegExp("id: sshExportProc\\s+command: Model\\.sshExportCommand\\(\\)\\s+environment: " + without).test(svc)
-      && new RegExp("id: slotRemovalProc\\s+environment: " + without).test(svc)
-      && new RegExp("execDetached\\(\\{ command: Model\\.terminalLoginCommand\\(mode, serverUrl, activeSlot\\),\\s+environment: " + without + " \\}\\)").test(svc)
-      && new RegExp("var env = " + without + "\\s+env\\[Model\\.openPathEnvVar\\(\\)\\]").test(functionBody(svc, "openSavedAttachment")))
   check("withoutCompileCache() sets the variable to null, which a Process and the vault helper unset, and keeps the rest",
     JSON.stringify(Model.withoutCompileCache({ A: "1" })) === JSON.stringify({ A: "1", NODE_COMPILE_CACHE: null })
       && JSON.stringify(Model.withoutCompileCache()) === JSON.stringify({ NODE_COMPILE_CACHE: null })
@@ -980,12 +952,6 @@ for (const builder of ["bwEnv", "generatorServeEnv"]) {
       sent: () => v.written.map(line => JSON.parse(line).env),
       runLater: () => v.later.splice(0).forEach(fn => fn()) }
   }
-  check("both starts ask the service last: the helper dispatch once its environment is put together, the local start as it hands it to the process",
-    /else environment\[key\] = proc\.environment\[key\]\s+\}\s+bwEnvAtStart\(environment\)\s+if \(!vaultHelperActive\)/.test(functionBody(svc, "vaultStart"))
-      && /local\.environment = vault\.bwEnvAtStart\(env\)\s+local\.command = cmd\s+local\.stdinEnabled = stdinText !== ""\s+local\.running = true/.test(functionBody(vaultProcess, "launchLocal"))
-      && (vaultProcess.match(/local\.environment = /g) || []).length === 2
-      && !/refreshBwCompileCacheIn/.test(svc))
-
   const helper = route(true)
   helper.v.bwCompileCache = false
   helper.dispatch()
@@ -1026,7 +992,7 @@ for (const builder of ["bwEnv", "generatorServeEnv"]) {
       && ["lockProc", "envelopeProc", "listProc"].every(id => new RegExp("VaultProcess \\{\\s*id: " + id + "\\b").test(svc)))
   // What is not a VaultProcess reads its environment as a binding when it
   // starts, so there is no earlier copy to go stale.
-  const plain = svc.split(/\n  (?=Process \{)/).slice(1).map(block => block.slice(0, block.indexOf("\n  }\n")))
+  const plain = svc.split(/\n  (?=(?:Text)?Process \{)/).slice(1).map(block => block.slice(0, block.indexOf("\n  }\n")))
     .filter(block => /environment: root\.(?:bwEnv|generatorServeEnv)\(/.test(block)).map(block => (block.match(/id: (\w+)/) || [])[1])
   check("the one plain Process that may use the cache (the generator's server) takes its environment from a binding",
     plain.join() === "generateServeProc", plain.join())

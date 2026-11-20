@@ -3,8 +3,7 @@ import Quickshell.Io
 
 // Whether the laptop lid is closed, which puts the fingerprint reader out of
 // reach, so the vault stops offering fingerprint unlock. Reads Omarchy's
-// detector (exit 0 = closed; no lid or no detector reads as open), polled only
-// while the panel or an SSH prompt is showing.
+// detector (no lid or no detector reads as open) while something is showing.
 Item {
   id: lid
 

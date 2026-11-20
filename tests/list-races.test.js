@@ -23,7 +23,8 @@ const functions = ["beginEpochOperation", "invalidateEpochOperation", "beginVaul
   "openDetail", "onDetailFinished", "itemNeedsReprompt", "dropVaultState", "listSnapshotOutdated",
   "settleOwedListRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem", "leaveProvisionalDetail",
   "onDeleteItemFinished", "reconcileOpenDetail", "totpWanted",
-  "isFieldRevealed", "itemChangeRunning", "commitStagedList", "discardStagedList", "listReadFailed"]
+  "isFieldRevealed", "itemChangeRunning", "commitStagedList", "commitAnswered", "discardStagedList", "listReadFailed",
+  "queueAttachment", "pumpAttachmentQueue", "onAttachmentDownloaded", "cancelAttachmentDownloads"]
 
 // VaultProcess, as far as starting goes: a change of `running` to true starts
 // a run only when none is held (runId 0); to false it asks for a kill, and
@@ -71,7 +72,7 @@ function fixture() {
   const c = {
     Model, runs, console,
     session: "session-a", status: "unlocked", vaultEpoch: 1, readEpochs: {}, queuedReads: {},
-    vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, listCommitRetried: false, createdItemHandoff: null,
+    vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, listCommitRetried: false, listCommitText: "", createdItemHandoff: null,
     pendingSave: null, pendingDelete: null, recheckArmedAutoType() {}, recheckTotpFollowup() {}, sshTotalPendingCount: 0,
     vaultHelperActive: true, dependencies: deps,
     items: [], filteredItems: [], organizations: [], folders: [], sends: [], sendIndex: 0,
@@ -86,7 +87,8 @@ function fixture() {
     sshAgentLoadActive: false, sshAgentLoadedForVaultEpoch: -1, sshAgentProc: { stdinEnabled: false },
     scrubPending: [], scrubRetry: { stop() {}, restart() {} },
     detailItem: null, detailPassword: "", liveTotp: "", revealedFields: {}, showDeleteConfirm: false,
-    attachmentQueue: [], attachmentSaved: {}, currentScreen: "main", repromptVerifiedId: "",
+    attachmentQueue: [], attachmentSaved: {}, attachmentBusyId: "", attachmentBusyName: "", resetAutoLockTimer() {},
+    currentScreen: "main", repromptVerifiedId: "",
     flashes: [], derived: 0,
     bwEnv: () => ({}), endSshAgentLoad() {}, maybeStartupLoad() {}, deferredMetadataTimer: { restart() {} },
     refreshDerivedFromItems() { c.derived++ }, flashNotification: m => c.flashes.push(m),
@@ -95,12 +97,13 @@ function fixture() {
     formIsEditing: false, formItemId: "", generatorReturnScreen: "main",
     forgetVaultItem: id => c.forgotten.push(id)
   }
-  for (const id of ["listProc", "listOrgsProc", "listFoldersProc", "orgCollectionsProc", "listSendsProc", "getItemProc"])
+  for (const id of ["listProc", "listOrgsProc", "listFoldersProc", "orgCollectionsProc", "listSendsProc", "getItemProc",
+    "attachmentProc"])
     c[id] = makeProc(id, runs)
   for (const id of ["listStdout", "listStderr", "listOrgsStdout", "listFoldersStdout", "orgCollectionsStdout",
-    "listSendsStdout", "getItemStdout", "getItemStderr"]) c[id] = { text: "" }
+    "listSendsStdout", "getItemStdout", "getItemStderr", "attachmentStdout", "attachmentStderr"]) c[id] = { text: "" }
   for (const name of ["cancelEnvelopeUnlockJobs", "cancelPinentry", "resetPinentryChoice", "cancelFingerprintUnlock",
-    "cancelFidoUnlock", "cancelAttachmentDownloads", "forgetVault", "resetItemForm", "dropVaultSecrets"]) c[name] = () => {}
+    "cancelFidoUnlock", "forgetVault", "resetItemForm", "dropVaultSecrets"]) c[name] = () => {}
   // The vault helper's items, as far as list reads go (vault/src/store.rs).
   // One that stages sets a read aside under an id and answers from what it
   // held until that id is committed; one from before staging takes each read
@@ -138,7 +141,8 @@ function fixture() {
   c.root = c
   vm.createContext(c)
   vm.runInContext(functions.map(n => functionBody(source, n)).join("\n"), c)
-  for (const id of ["listProc", "listOrgsProc", "listFoldersProc", "orgCollectionsProc", "listSendsProc", "getItemProc"])
+  for (const id of ["listProc", "listOrgsProc", "listFoldersProc", "orgCollectionsProc", "listSendsProc", "getItemProc",
+    "attachmentProc"])
     vm.runInContext(`function exit_${id}(exitCode) {\n${exitHandler(id)}\n}`, c)
   // A run of `id` ends: its output is in the collectors, then exited().
   // `between`: what happens after the helper has dealt with the output and
@@ -607,10 +611,16 @@ const finishSave = (c, code, out) => {
   d.exit("listProc", 0, vaultOf("shared"), "", () => d.onDeleteItemFinished(0, "", ""))
   check("a delete left over from the vault before tells the helper nothing: the row shown is one it holds",
     d.forgotten.length === 0 && d.helper.held.join() === "id-shared" && names(d) === "shared", JSON.stringify(d.helper) + names(d))
-  Object.assign(u.listProc, { staged: 7, committing: 7 }); u.listCommitRetried = true
+  u.helper.defer = true
+  u.loadItems(false); u.exit("listProc", 0, vaultOf("late"), "")       // its commit's answer is on the way
+  const awaited = u.listCommitText !== ""
+  u.listProc.staged = 7; u.listCommitRetried = true
   u.dropVaultState()
-  check("a lock drops the staged read's id, the commit awaited and its retry",
-    u.listProc.staged === 0 && !u.listProc.committing && !u.listCommitRetried)
+  const dropped2 = u.listProc.staged === 0 && !u.listProc.committing && !u.listCommitRetried && u.listCommitText === ""
+  u.session = "session-a"; u.status = "unlocked"; u.vaultEpoch -= 1    // even were the answer taken for this vault's
+  u.helper.answer()
+  check("a lock drops the staged read's id, the commit awaited with its list, and its retry: a late answer shows nothing",
+    awaited && dropped2 && names(u) === "", JSON.stringify({ awaited, dropped2, now: names(u) }))
   // Another session is handed over (a terminal sign-in) while the helper's
   // answer is on the way: its read waits for that answer, which is for a
   // vault no longer open.
@@ -766,7 +776,31 @@ const finishSave = (c, code, out) => {
   eq("without an automatic reload owed there is nothing to leave it to", m.runsOf("listProc").length, 2)
 }
 
-check("the waiting reads are per-vault state a lock drops", /queuedReads = \(\{\}\)/.test(functionBody(source, "dropVaultState")))
+// --- an attachment download asked for while a cancelled one still holds the process ---
+{
+  const c = fixture()
+  c.detailItem = { id: "item-1" }
+  c.queueAttachment({ id: "att-a", fileName: "a.txt", size: 1 })
+  c.cancelAttachmentDownloads()                    // the panel closed: killed, its exit still to come
+  c.queueAttachment({ id: "att-b", fileName: "b.txt", size: 1 })
+  c.exit("attachmentProc", 0, "/dl/a.txt", "")     // the killed run had finished: it answers with its own file
+  check("a cancelled download's answer is not taken for the next one's, which starts once that run has ended",
+    c.attachmentSaved["att-b"] === undefined && c.errorMessage === "" && c.flashes.length === 0
+      && c.attachmentBusyId === "att-b" && c.runsOf("attachmentProc").length === 2,
+    JSON.stringify([c.attachmentSaved, c.errorMessage, c.attachmentBusyId, c.runsOf("attachmentProc").length]))
+  // A lock's scrub holds the process the same way: the download asked for
+  // after the next unlock starts when the scrub ends, and is the one shown.
+  c.exit("attachmentProc", 0, "/dl/b.txt", "")
+  c.attachmentProc.command = Model.scrubCommand(); c.attachmentProc.running = true; c.scrubPending = [c.attachmentProc]
+  c.queueAttachment({ id: "att-c", fileName: "c.txt", size: 1 })
+  const held = c.runsOf("attachmentProc").length
+  c.exit("attachmentProc", 0, "", "")
+  const started = c.runsOf("attachmentProc").length
+  c.exit("attachmentProc", 0, "/dl/c.txt", "")
+  eq("a download asked for behind a lock's scrub starts when the scrub ends, and each answer is its own",
+    [c.attachmentSaved["att-b"], held, started, c.attachmentSaved["att-c"]].join(), "/dl/b.txt,3,4,/dl/c.txt")
+}
+
 for (const id of ["listOrgsProc", "listFoldersProc", "orgCollectionsProc", "listSendsProc", "getItemProc"]) {
   // The scrub is recognised by the process's command, which a waiting read's
   // start replaces: asked first.

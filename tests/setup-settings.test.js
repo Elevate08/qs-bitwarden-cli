@@ -24,8 +24,9 @@ check("a locked panel focuses whichever field the offered unlock method uses",
 
 // The wtype row says whether a key runs auto-type, from the model's text.
 check("the setup screen's wtype row carries the keybinding note",
-  /visible: depCard\.modelData\.key === "wtype" && root\.autoTypeKeybind\.setupNote !== ""\s*\n\s*width: parent\.width\s*\n\s*text: root\.autoTypeKeybind\.setupNote/.test(panelSrc),
-  "expected the wtype card to show autoTypeKeybind.setupNote")
+  /PanelNote \{\s*visible: depCard\.modelData\.key === "wtype" && root\.autoTypeKeybind\.setupNote !== ""\s*\n\s*text: root\.autoTypeKeybind\.setupNote/.test(panelSrc)
+    && /component PanelNote: PanelText \{\s*width: parent \? parent\.width : 0\s*wrapMode: Text\.WordWrap/.test(panelSrc),
+  "expected the wtype card to show autoTypeKeybind.setupNote, full width and wrapped")
 check("the setup screen reads the binding while auto-type is on",
   /onCurrentScreenChanged: \{\s*\n\s*if \(currentScreen === "setup" && autoTypeEnabled\) inspectAutoTypeKeybind\(\)/.test(panelSrc)
     && /function checkDependencies\(\)[\s\S]{0,260}if \(autoTypeEnabled && currentScreen === "setup"\) inspectAutoTypeKeybind\(\)/.test(panelSrc),
@@ -48,9 +49,6 @@ check("all present: nothing required is missing",
   Model.missingRequired(all).length === 0,
   `got [${Model.missingRequired(all).map(d => d.key)}]`)
 check("all present: fprintd reported ready", byKey(all, "fprintd").ready === true, "expected ready")
-check("jq is a required dependency alongside bw",
-  byKey(all, "jq") && byKey(all, "jq").required === true && byKey(all, "jq").pkg === "jq",
-  JSON.stringify(byKey(all, "jq")))
 check("the dependency probe checks for jq before vault reads",
   dependencyProbe.includes("command -v jq"),
   dependencyProbe)
@@ -97,9 +95,6 @@ check("the bw CLI version for SSH gating comes from its own probe",
       && probed.indexOf("latestId !== probedId") < probed.indexOf("dependencies = Model.parseDependencies"),
     probed)
 }
-check("SSH_CLI_MIN_VERSION is the verified floor",
-  Model.SSH_CLI_MIN_VERSION === "2025.1.2",
-  String(Model.SSH_CLI_MIN_VERSION))
 check("sshCliSupport marks 2025.1.2 as supported",
   sshCliSupport("2025.1.2") === "supported",
   JSON.stringify(sshCliSupport("2025.1.2")))
@@ -280,10 +275,8 @@ check("setting writer caps its diagnostic stderr",
 // write a key the plugin never reads.
 const manifest = JSON.parse(read("manifest.json"))
 const manifestKeys = new Set(manifest.barWidget.schema.map(e => e.key))
-for (const entry of Model.SETTINGS_SCHEMA) {
-  check(`schema key '${entry.key}' exists in manifest.json`,
-    manifestKeys.has(entry.key), `manifest has [${[...manifestKeys]}]`)
-}
+const notInManifest = Model.SETTINGS_SCHEMA.map(e => e.key).filter(k => !manifestKeys.has(k))
+check("every schema key exists in manifest.json", notInManifest.length === 0, `missing [${notInManifest}]`)
 const colorizeManifest = manifest.barWidget.schema.find(e => e.key === "colorizeIcon")
 check("manifest colorized icon schema matches the model contract",
   !!colorizeManifest

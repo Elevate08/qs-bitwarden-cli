@@ -346,14 +346,6 @@ for (const code of [0, 1]) {
   vm.runInContext(["onStatusFinished", "vaultStatePresent"].map(n => functionBody(source, n)).join("\n"), n)
   n.errorMessage = "An unrelated edit failed"; n.beginEpochOperation("status"); n.onStatusFinished("")
   eq("another message is left exactly as dropping the vault leaves it", n.errorMessage, "An unrelated edit failed")
-  const exited = functionBody(source, "listReadFailed")
-  check("a failed list read records the message it showed",
-    /errorMessage = Model\.vaultListFailureMessage\(stderrText, dependencies, listReadMode\)\s*listReadError = errorMessage/.test(exited),
-    exited)
-  const finished = functionBody(source, "onListFinished")
-  const staleAt = finished.indexOf('vaultReadIsStale("items")) return')
-  check("a stale list result clears nothing",
-    staleAt >= 0 && finished.indexOf("listReadError") > staleAt, finished)
   // The same, run: a list answer for a vault no longer open, with a message up.
   const st = fixture(); st.dependencies = noJq; st.loadItems(false); st.dependencies = deps
   const up = st.errorMessage

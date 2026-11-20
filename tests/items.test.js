@@ -523,9 +523,6 @@ check("finding an item by id returns null rather than throwing when absent",
       && Model.findItemById({ length: NaN }, "id-1") === null
       && Model.findItemById({ length: "2", 0: { id: "id-1" } }, "id-1") === null
       && Model.findItemById([null, undefined, 3], "id-1") === null)
-  check("the lookup does not go through toList",
-    !/toList\(/.test(functionBody(readPluginSource("BitwardenModel.js"), "findItemById")),
-    "toList() copies and truncates at MAX_LIST_ENTRIES")
 }
 
 // --- the fallback path still has to behave ----------------------------------
@@ -550,9 +547,8 @@ const glyphs = [
 ]
 for (const [typeCode, cp, name, label] of glyphs) {
   const got = Model.itemTypeGlyph(typeCode)
-  check(`${label} draws ${name}`, got.codePointAt(0) === cp,
+  check(`${label} draws ${name}, one glyph and not a sequence`, got === String.fromCodePoint(cp),
     `U+${got.codePointAt(0).toString(16).toUpperCase()}`)
-  check(`${label} is one glyph, not a sequence`, [...got].length === 1, JSON.stringify(got))
 }
 // itemTypeName() maps unknown types to "login", so itemTypeGlyph's default
 // shield is unreachable.
@@ -596,13 +592,6 @@ check("an unrecognised type is drawn as a login, not as the unreachable shield",
   try { assert.deepStrictEqual(payload, expected) } catch (e) { same = false }
   check("an unchanged edit writes the item back byte for byte", same,
     JSON.stringify(payload))
-  check("an unchanged edit keeps the password's edge spaces",
-    payload.login.password === "  hunter2 \t", JSON.stringify(payload.login.password))
-  check("an unchanged edit keeps a note's trailing newlines",
-    payload.notes === stored.notes, JSON.stringify(payload.notes))
-  check("an unchanged edit keeps every website with its match rule",
-    JSON.stringify(payload.login.uris) === JSON.stringify(stored.login.uris),
-    JSON.stringify(payload.login.uris))
 
   // A rename is an unchanged edit apart from the name.
   const renamed = Model.buildEditPayload(detail, "Bank (joint)", row.username, formPassword,

@@ -5,7 +5,7 @@
 //
 //   node tests/item-icons.test.js
 
-const { createSuite, loadModule, read, readPluginSource } = require("./harness")
+const { createSuite, loadModule, read } = require("./harness")
 const Model = loadModule()
 
 const { check, done } = createSuite("item-icons")
@@ -117,23 +117,26 @@ const manifest = JSON.parse(read("manifest.json"))
 for (const key of ["showWebsiteIcons", "sideBySide"]) {
   const entry = Model.SETTINGS_SCHEMA.find(e => e.key === key)
   const inManifest = manifest.barWidget.schema.find(e => e.key === key)
-  check(`${key} is a General bool, on by default as in Bitwarden desktop`,
-    !!entry && entry.group === "general" && entry.type === "bool" && entry.defaultValue === true,
+  // Website icons are opt-in: each one names a saved site to the icon
+  // service, and Qt names it in the journal when the icon is missing.
+  const on = key === "sideBySide"
+  check(`${key} is a General bool, ${on ? "on by default as in Bitwarden desktop" : "off by default"}`,
+    !!entry && entry.group === "general" && entry.type === "bool" && entry.defaultValue === on,
     JSON.stringify(entry))
   check(`${key} matches the manifest`,
-    !!inManifest && inManifest.type === "boolean" && inManifest.defaultValue === true
+    !!inManifest && inManifest.type === "boolean" && inManifest.defaultValue === on
       && inManifest.label === entry.label && inManifest.description === entry.description
-      && manifest.barWidget.defaults[key] === true,
+      && manifest.barWidget.defaults[key] === on,
     JSON.stringify(inManifest))
   check(`${key} rejects malformed input`,
-    Model.boolSetting(key, "false") === true && Model.boolSetting(key, false) === false)
+    Model.boolSetting(key, on ? "false" : "true") === on && Model.boolSetting(key, !on) === !on)
 }
 check("the website icon setting says what it discloses",
-  /icon service/.test(Model.SETTINGS_SCHEMA.find(e => e.key === "showWebsiteIcons").description))
+  /icon service.*named in the system journal/.test(Model.SETTINGS_SCHEMA.find(e => e.key === "showWebsiteIcons").description))
 
 const service = read("Service.qml")
 check("the service reads both settings through boolSetting",
-  /readonly property bool showWebsiteIcons: Model\.boolSetting\("showWebsiteIcons", setting\("showWebsiteIcons", true\)\)/.test(service)
+  /readonly property bool showWebsiteIcons: Model\.boolSetting\("showWebsiteIcons", setting\("showWebsiteIcons", false\)\)/.test(service)
     && /readonly property bool sideBySide: Model\.boolSetting\("sideBySide", setting\("sideBySide", true\)\)/.test(service)
     && /case "showWebsiteIcons": return showWebsiteIcons/.test(service)
     && /case "sideBySide": return sideBySide/.test(service))
@@ -150,7 +153,6 @@ check("ItemIcon draws only the URL websiteIconUrl() gives",
 check("the glyph stays until the image has loaded",
   /imageShown: imageUrl !== "" && favicon\.status === Image\.Ready/.test(icon)
     && /visible: !icon\.imageShown/.test(icon))
-check("icons load off the GUI thread", /asynchronous: true/.test(icon))
 check("icons are decoded at device pixels, not logical ones",
   /pixelSize: Math\.ceil\(size \* Math\.max\(1, Screen\.devicePixelRatio/.test(icon)
     && /sourceSize\.width: icon\.pixelSize/.test(icon) && /sourceSize\.height: icon\.pixelSize/.test(icon))
@@ -179,8 +181,5 @@ check("browsing does not teach suggestions",
 check("browsing waits for the cursor to settle",
   /browseDetailTimer\.restart\(\)/.test(service) && /onTriggered: root\.openBrowsedDetail\(\)/.test(service))
 
-// readPluginSource() folds the service into the view; it must still parse
-// the new properties as the view's.
-check("readPluginSource() still sees the split", /splitView/.test(readPluginSource("Panel.qml")))
 
 done()

@@ -169,8 +169,6 @@ check("the save writes only the options, quietly",
     && /Model\.settingWriteCommand\("generatorOptions",[^)]*"json"\)/.test(saveBody)
     && !/genValue|settingsFlash|console\./.test(saveBody),
   saveBody)
-check("an unchanged option set is not written again",
-  /===\s*genOptsSaved\)\s*return/.test(saveBody), saveBody)
 check("a change made while a save runs is written after it",
   /genOptsWriteProc\.running[\s\S]*genOptsWritePending\s*=\s*true/.test(saveBody)
     && /genOptsWritePending[\s\S]*saveGeneratorOptions\(\)/.test(

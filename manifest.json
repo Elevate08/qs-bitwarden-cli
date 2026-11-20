@@ -31,7 +31,7 @@
       "closeOnCopy": true,
       "autoTypeEnabled": false,
       "colorizeIcon": false,
-      "showWebsiteIcons": true,
+      "showWebsiteIcons": false,
       "sideBySide": true,
       "checkForUpdates": true,
       "bwCompileCache": false,
@@ -134,8 +134,8 @@
         "key": "showWebsiteIcons",
         "type": "boolean",
         "label": "Show website icons",
-        "description": "Show a recognizable image beside each login, and card brand marks, as Bitwarden does. Each login's website name is sent to your server's icon service (icons.bitwarden.net on Bitwarden's cloud), which so learns which sites you have saved.",
-        "defaultValue": true
+        "description": "Show a login's website icon, and card brand marks, as Bitwarden does. With this on, for each login whose first URI holds a website host name (none is sent for .onion, .i2p or non-ASCII names), that host name is sent to the icon service when its icon is shown for a list row or the detail header, or the setting is turned on: Bitwarden's icon service for your region (icons.bitwarden.net or icons.bitwarden.eu), or your own server when self-hosted. The service so learns which sites you have saved, and a site whose icon is missing or unreadable is named in the system journal by Qt. Android and Apple app marks are built in and show either way.",
+        "defaultValue": false
       },
       {
         "key": "sideBySide",

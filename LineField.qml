@@ -5,9 +5,8 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Single-line field with the shell TextField's chrome and call-site API
-// (text, placeholderText, accepted, password, foreground, accent,
-// horizontalPadding). The root is a focus scope, not a TextField.
+// Single-line field with the shell TextField's chrome and call-site API. The
+// root is a focus scope, not a TextField.
 //
 // Qt 6.12's editable TextInput handles QClipboard::dataChanged by calling
 // QMimeData::text(). On Wayland that reads the data-device selection in the
@@ -46,14 +45,12 @@ FocusScope {
   // field's own right inset.
   property real rightPadding: horizontalPadding + Border.right(_borderSpec)
   // Return also submits the form around the field: the nearest ancestor with
-  // a submitForm() function. A form-level Shortcut cannot, because the
-  // editable TextEdit claims Return and Enter in ShortcutOverride, so the
-  // Shortcut never fires while a field has focus. A field whose own Return
-  // does something else (onAccepted) turns this off.
+  // a submitForm() function. A form-level Shortcut cannot: the editable
+  // TextEdit claims Return and Enter in ShortcutOverride. A field whose own
+  // Return does something else (onAccepted) turns this off.
   property bool submitsForm: true
-  // Off for a field drawn on a surface of its own (the unlock prompt's card,
-  // pinentry/PinentryCard.qml): no fill and no border, the same text and
-  // caret.
+  // Off for a field drawn on a surface of its own (pinentry/PinentryCard.qml):
+  // no fill and no border, the same text and caret.
   property bool framed: true
   property string fontFamily: Style.font.family
   property real fontPixelSize: Style.font.body
@@ -74,9 +71,8 @@ FocusScope {
   // Parents connected while a paste runs. Hiding a form does not notify the
   // field itself, and the collector would otherwise keep reading.
   property var _pasteGuards: []
-  // TextEdit paints at the padding origin and does not follow the caret the
-  // way TextInput does. Shifting the padding scrolls the glyphs and the caret
-  // together; clip hides what moved past the edge.
+  // TextEdit paints at the padding origin and does not follow the caret as
+  // TextInput does: shifting the padding scrolls glyphs and caret together.
   property real hscroll: 0
   property bool _following: false
   property bool _syncing: false
@@ -478,9 +474,8 @@ FocusScope {
     root.focusFromTab(false)
   }
 
-  // Read-only on purpose. An editable TextInput would read the clipboard offer
-  // on every change. Password echo mode is what the accessible text interface
-  // returns as bullets; the QML text property stays the real value.
+  // Read-only on purpose (see the header). Masked, its password echo is what
+  // accessibility reads as bullets; the QML text property stays the real value.
   TextInput {
     id: store
     readOnly: true
@@ -510,8 +505,7 @@ FocusScope {
     // identify a masked field by the echo value on the focused item.
     readonly property int echoMode: root.echoMode
 
-    // Plain text, one line. Return is accepted on the scope, so it does not
-    // insert a break.
+    // Plain text, one line; the scope accepts Return, so it inserts no break.
     textFormat: TextEdit.PlainText
     wrapMode: TextEdit.NoWrap
     verticalAlignment: TextEdit.AlignVCenter
@@ -548,8 +542,7 @@ FocusScope {
     // The field's own caret for a masked value: same look as the delegate.
     // x follows cursorRectangle (padding and hscroll included). y is centred
     // from the editor's own box: cursorRectangle.y can lag a size change
-    // until the next edit, which drew the caret high on a field that was
-    // just shown.
+    // until the next edit.
     Rectangle {
       id: maskedCaret
       objectName: "maskedCaret"

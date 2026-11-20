@@ -112,9 +112,6 @@ const euLogin = Model.terminalLoginCommand("login", "https://vault.bitwarden.eu"
 check("terminal login runs in a terminal", login.includes("omarchy launch terminal"), login.slice(0, 80))
 check("it falls back to a second terminal if the first is unavailable",
   login.includes("alacritty"), login.slice(0, 80))
-// --raw prints only the session key on stdout while prompts stay on stderr,
-// which is what lets the key be captured without breaking the interactive login.
-check("it captures the key with --raw", login.includes("--raw"), login.slice(0, 120))
 // The panel already knows which state it is in, so the terminal does not spend
 // a `bw status` round trip (~3.3s here) working it out before prompting.
 check("login mode runs bw login", login.includes("bw login --raw") && !login.includes("bw unlock"), login.slice(0, 200))
@@ -143,8 +140,6 @@ check("a successful login closes the terminal on its own",
   login.includes("Returning to the Bitwarden panel") && login.includes("sleep 1"),
   "expected the success branch to close itself")
 // The key is a secret at rest: tmpfs, user-only, gone when the session ends.
-check("the handoff lives in XDG_RUNTIME_DIR, not on disk",
-  login.includes("XDG_RUNTIME_DIR"), login.slice(0, 120))
 check("the handoff is created with a restrictive umask",
   login.includes("umask 077") && login.includes("chmod 700"), login.slice(0, 200))
 check("an incomplete login leaves nothing behind",

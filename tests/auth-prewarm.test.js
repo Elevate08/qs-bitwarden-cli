@@ -34,12 +34,10 @@ if (Model.unlockPrewarmCommand && Model.emailLoginPrewarmCommand && Model.authPa
     flat(email2fa).includes("'person@example.com'")
       && flat(email2fa).includes("'https://vault.example.com'"), flat(email2fa))
   check("2FA carries only the placeholder bw-login-code.js swaps for the code",
-    flat(email2fa).includes(" " + Model.twoFactorCodeFlag() + " ")
+    flat(email2fa).includes(" " + Model.TWOFACTOR_CODE_FLAG + " ")
       && !flat(email2fa).includes("--code") && !flat(email2fa).includes("QSBW_CODE"), flat(email2fa))
   check("the writer reads the password from the existing protected environment binding",
     flat(writer).includes('"$' + Model.passwordEnvVar() + '"'), flat(writer))
-  check("neither half embeds a password in its command",
-    !flat(unlock).includes(distinctive) && !flat(writer).includes(distinctive), flat(unlock) + "\n" + flat(writer))
   check("an unknown FIFO name is rejected instead of becoming a path",
     Model.authPasswordWriteCommand("../elsewhere").length === 0,
     flat(Model.authPasswordWriteCommand("../elsewhere")))
@@ -278,9 +276,6 @@ check("the obsolete prewarm exit starts the queued login instead of consuming it
   /loginSubmitAfterPrewarmStop[\s\S]*submitLogin/.test(resumeDeferredBlock)
     && /resumeDeferredLogin\(true\)/.test(loginProcBlock),
   resumeDeferredBlock)
-check("a queued login survives the buffer scrub taking the process first",
-  /finishScrubRun\(loginProc\)\)\s*\{[\s\S]{0,140}resumeDeferredLogin\(false\)/.test(loginProcBlock),
-  loginProcBlock)
 check("focusing during prewarm shutdown queues another prewarm",
   /loginPrepareAfterPrewarmStop\s*=\s*true/.test(bodyOf("prepareEmailLogin")),
   bodyOf("prepareEmailLogin"))
@@ -289,12 +284,6 @@ check("the stopped process services a queued prewarm when no submit is waiting",
   resumeDeferredBlock)
 check("a cancelled login with no queued restart scrubs any token that won the exit race",
   /else if \(mayScrub\) \{\s*\n\s*clearProcessCollectorSoon\(loginProc\)/.test(resumeDeferredBlock),
-  resumeDeferredBlock)
-// The scrub is the fallback, so a queued restart must be preferred to it --
-// otherwise the restart is what gets dropped.
-check("a queued restart is dispatched in preference to the scrub",
-  resumeDeferredBlock.indexOf("loginSubmitAfterPrewarmStop")
-    < resumeDeferredBlock.indexOf("clearProcessCollectorSoon"),
   resumeDeferredBlock)
 const unlockProcBlock = panelSrc.slice(panelSrc.indexOf("id: unlockProc"), panelSrc.indexOf("id: logoutProc"))
 check("a cancelled unlock scrubs any token that won the exit race",

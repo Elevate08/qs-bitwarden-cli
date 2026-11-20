@@ -10,6 +10,19 @@ Column {
   required property var panel
   required property var vault
 
+  // Text in the panel's font. Plain: what it shows may come from the vault.
+  component FormText: Text {
+    textFormat: Text.PlainText
+    font.family: form.panel.fontFamily
+  }
+
+  // A centred line of it across the form, wrapped at words.
+  component FormNote: FormText {
+    width: parent ? parent.width : 0
+    horizontalAlignment: Text.AlignHCenter
+    wrapMode: Text.WordWrap
+  }
+
   readonly property alias passwordField: passwordField
   readonly property alias pinField: pinField
   // The popup lets Tab reach the buttons; the panel keeps focus on the field.
@@ -22,8 +35,7 @@ Column {
 
   // One method at a time, first available of FIDO2, fingerprint, PIN, master
   // password. `chosen` (set by picking another method in the row) is ignored
-  // once that method becomes unavailable, e.g. an exhausted PIN or a closed
-  // lid.
+  // once that method becomes unavailable (an exhausted PIN, a closed lid).
   property string chosen: ""
   readonly property string method: chosen !== "" && methodAvailable(chosen)
     ? chosen
@@ -48,11 +60,9 @@ Column {
   readonly property var focusField: !typesHere ? null : (method === "pin"
     ? pinField
     : (method === "password" ? passwordField : null))
-  // A FIDO2 attempt: scanning, authorized, then unlocking.
   readonly property bool fidoBusy: form.vault.fidoScanning
     || form.vault.fidoAuthorized
     || (form.vault.isUnlocking && form.vault.pendingUnlockFrom === "fido")
-  // A fingerprint attempt: scanning, authorized, then unlocking.
   readonly property bool fingerprintBusy: form.vault.fingerprintScanning
     || form.vault.fingerprintAuthorized
     || (form.vault.isUnlocking && form.vault.pendingUnlockFrom === "fingerprint")
@@ -169,15 +179,13 @@ Column {
     anchors.horizontalCenter: parent.horizontalCenter
     spacing: Style.space(6)
 
-    Text {
+    FormText {
       id: fingerprintIcon
-      textFormat: Text.PlainText
       anchors.horizontalCenter: parent.horizontalCenter
       text: form.method === "fido" ? "󰟵" : (form.fingerprintBusy ? "󰈷" : "󰌋")
       // Accent the key glyph on the PIN and password screens too.
       color: Color.accent
       opacity: 0.85
-      font.family: form.panel.fontFamily
       font.pixelSize: Style.space(38)
 
       SequentialAnimation on opacity {
@@ -189,26 +197,22 @@ Column {
       }
     }
 
-    Text {
-      textFormat: Text.PlainText
+    FormText {
       anchors.horizontalCenter: parent.horizontalCenter
       text: form.vault.status === "unlocked"
         ? "Loading SSH keys"
         : (form.method === "password" ? "Enter Master Password"
           : (form.method === "pin" ? "Enter PIN" : "Unlock Vault"))
       color: form.panel.fg
-      font.family: form.panel.fontFamily
       font.pixelSize: Style.font.title
       font.bold: true
     }
 
-    Text {
-      textFormat: Text.PlainText
+    FormText {
       visible: form.vault.userEmail !== ""
       anchors.horizontalCenter: parent.horizontalCenter
       text: form.vault.userEmail
       color: form.panel.dim
-      font.family: form.panel.fontFamily
       font.pixelSize: Style.font.bodySmall
     }
   }
@@ -221,91 +225,59 @@ Column {
   }
 
   // Only on the FIDO2 screen: no other has a key to touch.
-  Text {
-    textFormat: Text.PlainText
+  FormNote {
     visible: form.method === "fido" && form.vault.fidoMessage !== ""
-    width: parent.width
-    horizontalAlignment: Text.AlignHCenter
     text: form.vault.fidoMessage
     color: form.fidoBusy ? Color.accent : form.panel.dim
-    font.family: form.panel.fontFamily
     font.pixelSize: Style.font.bodySmall
-    wrapMode: Text.WordWrap
   }
 
-  // Only on the fingerprint screen.
-  Text {
-    textFormat: Text.PlainText
+  FormNote {
     visible: form.method === "fingerprint" && form.vault.fingerprintMessage !== ""
-    width: parent.width
-    horizontalAlignment: Text.AlignHCenter
     text: form.vault.fingerprintMessage
     // Accented for the whole attempt, verification included.
     color: form.fingerprintBusy ? Color.accent : form.panel.dim
-    font.family: form.panel.fontFamily
     font.pixelSize: Style.font.bodySmall
-    wrapMode: Text.WordWrap
   }
 
   // Why the last FIDO2 attempt failed, on every screen, so it follows the user
   // to the next method.
-  Text {
-    textFormat: Text.PlainText
+  FormNote {
     visible: form.vault.fidoError !== ""
-    width: parent.width
-    horizontalAlignment: Text.AlignHCenter
     text: form.vault.fidoError
     color: form.panel.urgent
-    font.family: form.panel.fontFamily
     font.pixelSize: Style.font.bodySmall
-    wrapMode: Text.WordWrap
   }
 
   // Why the last fingerprint attempt failed, on every screen, likewise.
-  Text {
-    textFormat: Text.PlainText
+  FormNote {
     visible: form.vault.fingerprintError !== ""
-    width: parent.width
-    horizontalAlignment: Text.AlignHCenter
     text: form.vault.fingerprintError
     color: form.panel.urgent
-    font.family: form.panel.fontFamily
     font.pixelSize: Style.font.bodySmall
-    wrapMode: Text.WordWrap
   }
 
   // Offered on the master-password screen, which can enrol.
-  Text {
-    textFormat: Text.PlainText
+  FormNote {
     visible: form.method === "password" && form.vault.fingerprintUnlock
       && form.vault.fingerprintAvailable && !form.vault.fingerprintStored
-    width: parent.width
-    horizontalAlignment: Text.AlignHCenter
     text: "󰈷  Unlock once with your master password to enable fingerprint unlock."
     color: form.panel.dim
-    font.family: form.panel.fontFamily
     font.pixelSize: Style.font.caption
-    wrapMode: Text.WordWrap
   }
 
   // A rejected PIN stays shown after an exhausted PIN method disappears.
-  Text {
-    textFormat: Text.PlainText
+  FormNote {
     visible: form.fieldsOffered && form.method !== "pin" && form.vault.pinUnlockError !== ""
-    width: parent.width
-    horizontalAlignment: Text.AlignHCenter
     text: form.vault.pinUnlockError
     color: form.panel.urgent
-    font.family: form.panel.fontFamily
     font.pixelSize: Style.font.bodySmall
-    wrapMode: Text.WordWrap
   }
 
   // Fingerprint needs no field and no Unlock button.
   Button {
     visible: form.fieldsOffered && form.method === "fingerprint"
     width: parent.width
-    // Once a finger is read, say what the vault is doing.
     text: form.vault.isUnlocking
       ? "Unlocking..."
       : (form.vault.fingerprintScanning ? "Waiting for fingerprint..." : "Unlock with Fingerprint")
@@ -340,11 +312,9 @@ Column {
     width: parent.width
     spacing: Style.space(8)
 
-    Text {
-      textFormat: Text.PlainText
+    FormText {
       text: "PIN"
       color: form.panel.dim
-      font.family: form.panel.fontFamily
       font.pixelSize: Style.font.caption
       font.bold: true
     }
@@ -362,13 +332,11 @@ Column {
       enabled: form.typesHere && !form.vault.pinBusy && !form.vault.isUnlocking
     }
 
-    Text {
-      textFormat: Text.PlainText
+    FormText {
       visible: form.vault.pinUnlockError !== ""
       width: parent.width
       text: form.vault.pinUnlockError
       color: form.panel.urgent
-      font.family: form.panel.fontFamily
       font.pixelSize: Style.font.bodySmall
       wrapMode: Text.WordWrap
     }
@@ -404,60 +372,40 @@ Column {
   }
 
   // The PIN's own field shows this when pinentry takes the typing.
-  Text {
-    textFormat: Text.PlainText
+  FormNote {
     visible: form.fieldsOffered && form.method === "pin" && form.pinentryOffered
       && form.vault.pinUnlockError !== ""
-    width: parent.width
-    horizontalAlignment: Text.AlignHCenter
     text: form.vault.pinUnlockError
     color: form.panel.urgent
-    font.family: form.panel.fontFamily
     font.pixelSize: Style.font.bodySmall
-    wrapMode: Text.WordWrap
   }
 
   // Where the typing happens, on the two typed methods.
-  Text {
-    textFormat: Text.PlainText
+  FormNote {
     visible: form.fieldsOffered && form.pinentryOffered && String(form.vault.pinentryNotice || "") === ""
-    width: parent.width
-    horizontalAlignment: Text.AlignHCenter
     text: "Your " + (form.method === "pin" ? "PIN" : "master password")
       + " is typed in a separate window, not in this panel."
     color: form.panel.dim
-    font.family: form.panel.fontFamily
     font.pixelSize: Style.font.caption
-    wrapMode: Text.WordWrap
   }
 
   // The same window, once the vault helper it runs under is up.
-  Text {
-    textFormat: Text.PlainText
+  FormNote {
     visible: form.fieldsOffered && form.waitingForHelper
-    width: parent.width
-    horizontalAlignment: Text.AlignHCenter
     text: "Your " + (form.method === "pin" ? "PIN" : "master password")
       + " is typed in a separate window once the vault helper is running."
     color: form.panel.dim
-    font.family: form.panel.fontFamily
     font.pixelSize: Style.font.caption
-    wrapMode: Text.WordWrap
   }
 
   // Pinentry failed (the Unlock button tries it again), or the panel's own
   // field was picked after that and what is typed stays in the shell.
-  Text {
-    textFormat: Text.PlainText
+  FormNote {
     visible: form.fieldsOffered && text !== ""
       && (form.method === "pin" || form.method === "password")
-    width: parent.width
-    horizontalAlignment: Text.AlignHCenter
     text: String(form.vault.pinentryNotice || "")
     color: form.panel.dim
-    font.family: form.panel.fontFamily
     font.pixelSize: Style.font.caption
-    wrapMode: Text.WordWrap
   }
 
   // After a failed pinentry, typing here is the user's choice, never the
@@ -476,7 +424,6 @@ Column {
     }
   }
 
-  // One Unlock button for both typed methods.
   Button {
     visible: form.fieldsOffered && form.method !== "fingerprint" && form.method !== "fido"
     width: parent.width

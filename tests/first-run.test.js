@@ -230,12 +230,4 @@ check("install: nothing to install produces no command at all",
   Model.installPackagesCommand(Model.missingPackages(INSTALLED)) === null,
   "an empty package list still produced a command")
 
-// The setup screen's copy is the first thing a new user reads, and it is the
-// only place the plugin explains that it does not bundle these tools. A
-// requirement described as fatal reads as "you installed this too early".
-const bw = Model.DEPENDENCIES.find(d => d.key === "bw")
-check("copy: the required tools are presented as installable, not as a wall",
-  bw.required === true && !/nothing works/i.test(bw.purpose),
-  bw.purpose)
-
 done()

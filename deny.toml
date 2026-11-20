@@ -16,7 +16,9 @@ all-features = false
 yanked = "deny"
 ignore = [
   # RUSTSEC-2023-0071: Marvin, a timing sidechannel in `rsa`'s private-key
-  # operations. Unpatched upstream -- there is no fixed release to move to.
+  # operations. Fixed upstream in `rsa` 0.10.0 (the advisory lists `>= 0.10.0`
+  # as patched); this crate is still on 0.9, so the exception stays until the
+  # upgrade is made.
   #
   # Accepted for these reasons: the attack needs
   # accurate timing of many private-key operations from the attacker's own
@@ -25,13 +27,14 @@ ignore = [
   # farm timings from it is already a same-UID process on an unlocked desktop,
   # which the threat model does not defend against by design.
   #
-  # The alternatives are worse trades: `rsa` 0.10 is a release candidate, and
-  # binding OpenSSL or `ring` for RSA-only signing adds a native build and more
+  # Until then RSA signatures are blinded (agent/src/signing.rs), which is the
+  # 0.9 mitigation. Moving to 0.10 changes the big-integer backend and the
+  # signing API and needs a rebuilt helper, so it is its own change. Binding
+  # OpenSSL or `ring` for RSA-only signing would add a native build and more
   # attack surface than the advisory retires. Ed25519 keys are unaffected.
   #
-  # Revisit when `rsa` publishes a fix, or if Ed25519-only becomes acceptable.
-  # Last reviewed 2026-09-23; review again by 2027-03-23 either way.
-  { id = "RUSTSEC-2023-0071", reason = "no upstream fix; signing requires human approval or a short grant over a same-UID socket" },
+  # Last reviewed 2026-11-20: 0.10.0 is published; upgrade pending.
+  { id = "RUSTSEC-2023-0071", reason = "fixed in rsa 0.10.0, upgrade pending; RSA signing is blinded and requires human approval or a short grant over a same-UID socket" },
 ]
 
 [licenses]

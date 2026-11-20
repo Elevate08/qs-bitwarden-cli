@@ -4,8 +4,7 @@
 // It mirrors the Bitwarden SDK's reader (bitwarden-vault/src/totp.rs), quirks
 // included, so a code always matches what `bw get totp` would print. Anything
 // it does not mirror exactly (SHA-512, 0 or 10 digits, an otpauth URI the
-// SDK's URL parser might read differently) returns null, and the caller asks
-// bw as before.
+// SDK's URL parser might read differently) returns null; the caller asks bw.
 
 .pragma library
 

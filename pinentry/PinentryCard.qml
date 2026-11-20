@@ -7,9 +7,8 @@ import ".."
 // The plugin's pinentry prompt (omarchy-pinentry, PinentryPrompt.qml):
 // the shell's polkit prompt, drawn the same way from the same theme values
 // (`[polkit]` in the theme's shell.toml, the system font, the border spec and
-// Hyprland's rounding). A translucent scrim over the whole surface, a card
-// with a padlock and a masked field, the description above it, and the
-// error of a retry above the field in the error colour.
+// Hyprland's rounding): a scrim over the whole surface and a card with a
+// padlock, a masked field, the description and a retry's error.
 //
 // The padlock shows what is typed and hides it again, and gives the field
 // its focus back. Enter submits (accepted()), Escape cancels (rejected());
@@ -18,8 +17,7 @@ import ".."
 // The field is the panel's LineField, unframed, not polkit's TextInput: on
 // Qt 6.12 an editable TextInput reads every new clipboard offer into this
 // process on the GUI thread (see LineField.qml), and the clipboard is where
-// the panel puts a copied password. Paste goes through LineField's capped
-// wl-paste.
+// the panel puts a copied password. Paste uses LineField's capped wl-paste.
 Item {
   id: root
 

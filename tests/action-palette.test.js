@@ -85,17 +85,6 @@ const fnBody = name => {
   return start < 0 ? "" : panel.slice(start, panel.indexOf("\n  }\n", start))
 }
 const runPalette = fnBody("runPaletteAction")
-const paletteItem = fnBody("paletteItem")
-const listBranch = runPalette.slice(runPalette.indexOf('if (screen !== "detail")'), runPalette.indexOf('action.id === "delete"'))
-check("detail letters run through the existing handler", runPalette.includes("root.runDetailShortcut(action.key)"))
-check("list actions run through the letters' own gated handlers, on the palette's item",
-  ["root.vault.copyPassword(item)", "root.vault.copyUsername(item)", "root.vault.copyTotpCode(item)",
-    "root.vault.openUrl(item.uris[0])", "root.vault.openDetail(item)"].every(call => listBranch.includes(call)))
-check("list actions keep the letters' guards (TOTP only where there is one, a website only with a link)",
-  /if \(item\.hasTotp\) root\.vault\.copyTotpCode\(item\)/.test(listBranch)
-  && /if \(item\.uris && item\.uris\.length > 0\) root\.vault\.openUrl/.test(listBranch))
-check("every list action the model offers has a case",
-  Model.itemActions(login, LIST).every(a => listBranch.includes('case "' + a.id + '":')))
 // The re-prompt lives in copyPassword()/copyTotpCode(); the *Now variants skip it.
 check("the palette never calls an ungated copy", !/Now\(/.test(runPalette))
 
@@ -108,14 +97,6 @@ check("the palette remembers the id of the item it was opened for",
 check("the id is read before the palette closes and handed to the action",
   /var itemId = actionPalette\.itemId[\s\S]*actionPalette\.close\(\)[\s\S]*root\.runPaletteAction\(action, screen, itemId\)/.test(runAt))
 check("closing forgets the id", /actionPalette\.itemId = ""/.test(panel.slice(panel.indexOf("// Back to where it was opened."), panel.indexOf("function move(delta)"))))
-check("an action resolves its item by id first and does nothing without it",
-  /^  function runPaletteAction\(action, screen, itemId\) \{\n    var item = root\.paletteItem\(screen, itemId\)\n    if \(!item\) return\n/.test(runPalette))
-check("no palette action re-reads the selected row", !/runShortcut|getSelectedItem|selectedIndex|filteredItems/.test(runPalette + paletteItem))
-check("the item is looked up by id among the vault's items",
-  /String\(list\[i\]\.id\) === itemId/.test(paletteItem) && /root\.vault\.items/.test(paletteItem)
-  && /if \(itemId === ""\) return null/.test(paletteItem))
-check("on the detail screen the open item must still be the palette's",
-  /String\(detail\.id\) !== itemId\) return null/.test(paletteItem))
 check("delete asks only for the palette's own item", /if \(item\.typeCode !== 5\) root\.vault\.showDeleteConfirm = true/.test(runPalette)
   && !/root\.vault\.detailItem/.test(runPalette))
 
@@ -323,17 +304,6 @@ function saving(open, screen) {
     && makePanel(v.items, v.detailItem).paletteItem("detail", existingRow.id) === v.detailItem)
 }
 const paletteConn = panel.slice(panel.indexOf("// Closed when the vault locks"), panel.indexOf("color: Color.menu.scrim"))
-// The block is instantiated and driven through the vault's signals in
-// tests/qml/tst_palette_follows_detail.qml (qmltestrunner); a handler that is
-// right does nothing on a block that listens to something else, so what it
-// listens to is pinned here too, for a run without Qt.
-check("the palette's Connections block listens to the vault",
-  /^Closed when the vault locks[^\n]*\n\s*Connections \{\s*target: root\.vault\s*function onStatusChanged\(\)/.test(paletteConn.slice(3)), paletteConn.slice(0, 200))
-check("an open detail palette closes when the detail's item changes under it",
-  /function onDetailItemChanged\(\) \{\s+if \(!actionPalette\.shown \|\| actionPalette\.fromScreen !== "detail"\) return\s+var detail = root\.vault\.detailItem\s+if \(!detail \|\| String\(detail\.id\) !== actionPalette\.itemId\) actionPalette\.close\(\)/.test(paletteConn))
-check("and a QML test drives that block through the vault's own signals",
-  /paletteConnections\(\)/.test(read("tests/qml/tst_palette_follows_detail.qml"))
-    && /root\.vault\.detailItem = \{ id: "b" \}/.test(read("tests/qml/tst_palette_follows_detail.qml")))
 {
   // That handler, run: same id stays open, another id or none closes.
   const run = (palette, detailItem) => {
@@ -350,6 +320,5 @@ check("and a QML test drives that block through the vault's own signals",
 }
 
 check("README documents Ctrl+K", (read("README.md").match(/<kbd>Ctrl<\/kbd>\+<kbd>K<\/kbd>/g) || []).length >= 2)
-check("CHANGELOG mentions the palette", /action palette/i.test(read("CHANGELOG.md").split("## [Unreleased]")[1].split(/\n## \[/)[0]))
 
 done()

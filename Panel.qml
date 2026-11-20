@@ -14,7 +14,6 @@ Panel {
   // =========================================================================
   // View
   // =========================================================================
-  //
   // Everything here draws; the vault (state, commands, timers, IPC) is
   // Service.qml. tests/service-host.test.js enforces that neither side names
   // the other's controls.
@@ -25,7 +24,6 @@ Panel {
   // -------------------------------------------------------------------------
   // View contract
   // -------------------------------------------------------------------------
-  //
   // What the vault may ask of a view, via `presenter` or eachView(); it names
   // no control by id (enforced by tests/service-host.test.js).
 
@@ -68,12 +66,11 @@ Panel {
   }
 
   // SSH requests drawn in the panel itself (the centred card turned off) arm
-  // like the card does (SshApprovalScreen.qml). The panel opens for a request
-  // while the user may be typing elsewhere, and on a locked vault its focus
-  // target is the unlock field, so stray keys and an Enter used to submit a
-  // wrong PIN or part of another password. Until armed, a guard holds the
-  // keyboard and drops every key but Escape; a field the vault asks to focus
-  // meanwhile gets focus once armed.
+  // like the card does (SshApprovalScreen.qml): the panel opens while the user
+  // may be typing elsewhere, and on a locked vault stray keys and an Enter
+  // would submit a wrong PIN or part of another password to the unlock field.
+  // Until armed, a guard holds the keyboard and drops every key but Escape; a
+  // field the vault asks to focus meanwhile gets focus once armed.
   readonly property int sshArmDelayMs: 800
   readonly property bool sshRequestInPanel: root.opened && !root.vault.sshAgentApprovalPopup
     && (root.vault.sshPrompt !== null || root.vault.sshUnlockRequest !== null)
@@ -157,9 +154,8 @@ Panel {
   }
 
   // Re-point each field at its property with Qt.binding, never assign a value:
-  // an imperative `text =` breaks the binding, and the field would keep
-  // showing text the property no longer holds (a login once went out with no
-  // code while the field showed one). See tests/qml/tst_field_binding.qml.
+  // an imperative `text =` breaks the binding, and the field would keep showing
+  // text the property no longer holds. See tests/qml/tst_field_binding.qml.
   function syncLoginFields() {
     code2faField.text = Qt.binding(function() { return root.vault.login2faCode })
     deviceCodeField.text = Qt.binding(function() { return root.vault.loginDeviceCode })
@@ -185,11 +181,10 @@ Panel {
 
   // Master password re-prompt: Bitwarden's per-item flag that asks for the
   // master password before a secret of that item is shown, copied or edited.
-  // Every such action here goes through the vault's withReprompt(), which
-  // runs it at once for an ordinary item and only after the password is
-  // confirmed (RepromptConfirm.qml) for a flagged one. Protected: password,
-  // TOTP, card number and code, SSN, passport and licence numbers, hidden
-  // custom fields, notes, attachments, and editing.
+  // Every such action goes through the vault's withReprompt(), which runs a
+  // flagged item's only after the password is confirmed (RepromptConfirm.qml).
+  // Protected: password, TOTP, card number and code, SSN, passport and licence
+  // numbers, hidden custom fields, notes, attachments, and editing.
   function protect(item, action) {
     root.vault.withReprompt(item, action)
   }
@@ -207,8 +202,7 @@ Panel {
     root.vault.copyDetailField(field, label)
   }
 
-  // Enter, `y` and `p` on the detail screen: a card's number, else a login's
-  // password.
+  // Enter, `y`, `p` on the detail: a card's number, else a login's password.
   function copyPrimarySecret() {
     if (root.vault.detailIsCard) {
       if (root.vault.detailCard && root.vault.detailCard.number) {
@@ -226,7 +220,6 @@ Panel {
 
   // The detail screen's letters, from the key catcher and the action palette.
   function runDetailShortcut(lower) {
-    // `y` copies the item's primary secret (password or card number).
     if (lower === "y" || lower === "p") {
       root.copyPrimarySecret()
     } else if (lower === "n") {
@@ -271,10 +264,9 @@ Panel {
 
   // The item the palette was opened for, as the vault holds it now: the
   // list's item with that id, or on the detail screen the open detail if it
-  // is still that item. Null when a sync removed it from the vault or another
-  // item took its place. The open detail is a copy read earlier, so it also
-  // has to agree with the list about the master-password re-prompt: a sync
-  // that turned it on must not leave the palette acting on the old answer.
+  // is still that item; null when a sync removed or replaced it. The open
+  // detail is an earlier copy, so it must also agree with the list about the
+  // re-prompt: a sync that turned it on must not leave the old answer in use.
   function paletteItem(screen, itemId) {
     if (itemId === "") return null
     var fresh = null
@@ -362,11 +354,10 @@ Panel {
   }
 
   // Ctrl+C (Control alone) with auto-type on: copy and arm the login Enter
-  // acts on -- the open item on the detail screen, the highlighted row of the
-  // list, which is the top suggestion (or the first item) when the panel
-  // opens. Through copyPasswordAndArm(), so after any re-prompt. True when it
-  // took the key: something was armed, or its prompt shown. The callers say
-  // where it may run (the catcher unblocked, a search box with no selection).
+  // acts on -- the open item on the detail screen, else the highlighted row.
+  // Through copyPasswordAndArm(), so after any re-prompt. True when it took
+  // the key: something was armed, or its prompt shown. The callers say where
+  // it may run (the catcher unblocked, a search box with no selection).
   function armAutoTypeFromKey(event) {
     if ((event.modifiers & ~Qt.KeypadModifier) !== Qt.ControlModifier || event.key !== Qt.Key_C) return false
     if (!root.vault.autoTypeEnabled) return false
@@ -409,11 +400,9 @@ Panel {
   // -------------------------------------------------------------------------
   // Vault host
   // -------------------------------------------------------------------------
-  //
   // This widget exists per monitor; `vault` is the shared Service.qml, or a
-  // private one when the shell does not provide it (see
-  // Model.vaultHostDecision()). Never null: until resolved it is the bar's own
-  // inert standby vault.
+  // private one when the shell does not provide it (Model.vaultHostDecision()).
+  // Never null: until resolved it is the bar's own inert standby vault.
   //
   // A private vault may only mean the shell was slow to publish the service,
   // and with one per monitor a lock on one monitor is not a lock on the
@@ -557,8 +546,7 @@ Panel {
     settingsStickyEntry = found
   }
 
-  // Where the section at `index` ends: the next heading, or the last settings
-  // row.
+  // Where section `index` ends: the next heading, or the last settings row.
   function settingsSectionEnd(index) {
     var entries = root.vault.settingsEntries
     for (var i = index + 1; i < entries.length; i++) {
@@ -586,6 +574,61 @@ Panel {
     fontFamily: root.fontFamily
   }
 
+  // Text in the bar's font. Plain: vault values are untrusted and Text would
+  // otherwise render markup in them.
+  component PanelText: Text {
+    textFormat: Text.PlainText
+    font.family: root.fontFamily
+  }
+
+  // The kit's Button in the bar's font.
+  component PanelButton: Button {
+    fontFamily: root.fontFamily
+  }
+
+  // A paragraph as wide as what it sits in, wrapped at words.
+  component PanelNote: PanelText {
+    width: parent ? parent.width : 0
+    wrapMode: Text.WordWrap
+  }
+
+  // The box a value of the open item or a generated one is shown in.
+  component ValueBox: BorderSurface {
+    radius: Style.cornerRadius
+    color: Style.hoverFillFor(root.fg, Color.accent)
+    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+  }
+
+  // An item-form caption.
+  component FormCaption: PanelText {
+    color: root.dim; font.pixelSize: Style.font.caption; font.bold: true
+  }
+
+  // An item-form field: a caption over a LineField bound both ways by the
+  // caller (`text:` and `onTextChanged:`).
+  component FormLine: Column {
+    property alias label: formLineCaption.text
+    property alias placeholderText: formLineField.placeholderText
+    property alias text: formLineField.text
+    width: parent ? parent.width : 0
+    spacing: Style.space(3)
+    FormCaption { id: formLineCaption }
+    LineField { id: formLineField; width: parent.width }
+  }
+
+  // The same over a SecretField, for values the form keeps masked.
+  component FormSecret: Column {
+    id: formSecret
+    property alias label: formSecretCaption.text
+    property alias placeholderText: formSecretField.placeholderText
+    property alias text: formSecretField.text
+    property string iconFontFamily: root.fontFamily
+    width: parent ? parent.width : 0
+    spacing: Style.space(3)
+    FormCaption { id: formSecretCaption }
+    SecretField { id: formSecretField; width: parent.width; iconFontFamily: formSecret.iconFontFamily }
+  }
+
   // A form row: label, optional caption note, and a NumberEntry.
   component NumberRow: Row {
     id: numberRow
@@ -599,22 +642,18 @@ Panel {
     width: parent ? parent.width : 0
     spacing: Style.space(10)
 
-    Text {
-      textFormat: Text.PlainText
+    PanelText {
       anchors.verticalCenter: parent.verticalCenter
       width: parent.width - Style.space(170)
       text: numberRow.label
       color: root.fg
-      font.family: root.fontFamily
       font.pixelSize: Style.font.body
     }
-    Text {
-      textFormat: Text.PlainText
+    PanelText {
       anchors.verticalCenter: parent.verticalCenter
       visible: numberRow.note !== ""
       text: numberRow.note
       color: root.dim
-      font.family: root.fontFamily
       font.pixelSize: Style.font.caption
     }
     NumberEntry {
@@ -667,9 +706,8 @@ Panel {
         text: "󰞀"
       }
 
-      Text {
+      PanelText {
         id: shieldGlyph
-        textFormat: Text.PlainText
         // NativeRendering, like Omarchy's own glyphs; QtRendering fringed the
         // edges with colour.
         anchors.centerIn: parent
@@ -677,7 +715,6 @@ Panel {
           - (shieldGlyphMetrics.tightBoundingRect.x
             + shieldGlyphMetrics.tightBoundingRect.width / 2)
         text: "󰞀"
-        font.family: root.fontFamily
         font.pixelSize: Style.bar.iconFont
         color: root.vault.colorizeIcon ? Color.accent : (bar ? bar.barForeground : Color.foreground)
         renderType: Text.NativeRendering
@@ -699,11 +736,9 @@ Panel {
           color: bar ? bar.background : Color.background
         }
 
-        Text {
-          textFormat: Text.PlainText
+        PanelText {
           anchors.centerIn: parent
           text: "󰐕"
-          font.family: root.fontFamily
           font.pixelSize: Style.space(8)
           color: bar ? bar.urgent : Color.urgent
           renderType: Text.NativeRendering
@@ -726,11 +761,9 @@ Panel {
           color: bar ? bar.background : Color.background
         }
 
-        Text {
-          textFormat: Text.PlainText
+        PanelText {
           anchors.centerIn: parent
           text: "󰌾"
-          font.family: root.fontFamily
           font.pixelSize: Style.space(8)
           color: bar ? bar.barForeground : Color.foreground
           renderType: Text.NativeRendering
@@ -778,7 +811,6 @@ Panel {
   // -------------------------------------------------------------------------
   // Panel width
   // -------------------------------------------------------------------------
-  //
   // The vault list and an item's detail side by side (the `sideBySide`
   // setting), as Bitwarden desktop draws them, in a panel wide enough for
   // both. Only while unlocked: the lock and login screens keep the compact
@@ -884,10 +916,9 @@ Panel {
           return
         }
 
-        // With auto-type on, Ctrl+C arms the highlighted login
-        // (armAutoTypeFromKey()). Only while the catcher has the keys: in a
-        // field it stays the field's own copy, except in the search box,
-        // which arms from its own handler. Anything else falls through.
+        // With auto-type on, Ctrl+C arms the highlighted login. Only while the
+        // catcher has the keys: in a field it stays the field's own copy,
+        // except in the search box, which arms from its own handler.
         if (!keyCatcher.blocked && root.armAutoTypeFromKey(event)) {
           event.accepted = true
           return
@@ -1005,8 +1036,7 @@ Panel {
         // a card's number. Nothing on notes and identities.
         if (root.vault.currentScreen === "detail") root.copyPrimarySecret()
       }
-      // The kit turns x (and Delete) into this signal rather than a text key,
-      // so `x` never reached onTextKey and did nothing.
+      // The kit turns x (and Delete) into this signal, never a text key.
       onDeleteRequested: {
         if (root.vault.currentScreen === "sends" && root.vault.sendMode === "list") {
           if (root.vault.sendIndex < root.vault.sends.length) root.vault.deleteSend(root.vault.sends[root.vault.sendIndex])
@@ -1161,12 +1191,10 @@ Panel {
             anchors.rightMargin: Style.space(10)
             spacing: Style.space(8)
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               anchors.verticalCenter: parent.verticalCenter
               text: "󰄬"
               color: Color.accent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
 
@@ -1175,31 +1203,26 @@ Panel {
               width: parent.width - copyFollowupTotpBtn.width - Style.space(40)
               spacing: 1
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 text: "Password copied! Press Enter for TOTP"
                 color: root.fg
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 font.bold: true
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 text: root.vault.totpFollowupCode ? ("Code: " + root.vault.totpFollowupCode + " (expires in " + root.vault.totpSecRemaining + "s)") : "Fetching 2FA code..."
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
             }
 
-            Button {
+            PanelButton {
               id: copyFollowupTotpBtn
               anchors.verticalCenter: parent.verticalCenter
               text: "Copy TOTP (Enter)"
               selected: true
               accent: Color.accent
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: {
                 var item = root.vault.totpFollowupItem
@@ -1226,19 +1249,15 @@ Panel {
             anchors.centerIn: parent
             width: parent.width - Style.space(16)
             spacing: Style.space(8)
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: "󰀪"
               color: Color.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
-            Text {
+            PanelText {
               id: sshDevHelperText
-              textFormat: Text.PlainText
               text: Model.sshAgentDevelopmentHelperWarning(root.vault.sshAgentHelper)
               color: root.fg
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.Wrap
               width: parent.width - Style.space(24)
@@ -1273,19 +1292,15 @@ Panel {
             anchors.centerIn: parent
             width: parent.width - Style.space(16)
             spacing: Style.space(8)
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: "󰀪"
               color: Color.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
-            Text {
+            PanelText {
               id: vaultHelperText
-              textFormat: Text.PlainText
               text: root.vault.vaultHelperWarning
               color: root.fg
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.Wrap
               width: parent.width - Style.space(24)
@@ -1310,11 +1325,9 @@ Panel {
             anchors.centerIn: parent
             width: parent.width - Style.space(16)
             spacing: Style.space(8)
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: "󰀪"
               color: Color.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
             Column {
@@ -1322,21 +1335,18 @@ Panel {
               width: parent.width - Style.space(24)
               spacing: Style.space(8)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 text: root.vault.sshCooldownStatus.message
                 color: root.fg
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 wrapMode: Text.Wrap
                 width: parent.width
               }
 
-              Button {
+              PanelButton {
                 text: "Resume Signing Now"
                 iconText: "󰐊"
                 tooltipText: "End the cooldown; the next signing request asks again"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.resumeSshSigning()
               }
@@ -1347,19 +1357,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0f: BITWARDEN SEND
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: sendFlick
           visible: root.vault.activeScreen === "sends"
           width: parent.width
           height: Math.min(Style.space(520), sendCol.implicitHeight)
-          contentWidth: width
           contentHeight: sendCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: sendFlick }
 
           Column {
             id: sendCol
@@ -1372,10 +1375,9 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 text: root.vault.sendMode === "create" ? "Back to Sends" : "Back (Esc)"
                 iconText: "󰁍"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: {
                   if (root.vault.sendMode === "create") { root.vault.sendError = ""; root.vault.sendMode = "list" }
@@ -1383,37 +1385,31 @@ Panel {
                 }
               }
 
-              Button {
+              PanelButton {
                 visible: root.vault.sendMode === "list"
                 text: "New Send"
                 iconText: "󰐕"
                 selected: true
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.beginCreateSend()
               }
 
-              Button {
+              PanelButton {
                 visible: root.vault.sendMode === "list"
                 text: "Refresh"
                 iconText: "󰑐"
                 iconSpinning: root.vault.sendsLoading
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.loadSends()
               }
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelNote {
               visible: root.vault.sendError !== ""
-              width: parent.width
               text: root.vault.sendError
               color: root.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
             }
 
             // ---------------- list ----------------
@@ -1422,23 +1418,17 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelNote {
                 visible: !root.vault.sendsLoading && root.vault.sends.length === 0
-                width: parent.width
                 text: "No Sends yet. A Send shares a secret through a link that expires on its own -- useful for handing someone a credential without it living in a chat log."
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 visible: root.vault.sendsLoading
                 text: "Loading Sends..."
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
               }
 
@@ -1467,12 +1457,10 @@ Panel {
                     anchors.margins: Style.space(8)
                     spacing: Style.space(8)
 
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       anchors.verticalCenter: parent.verticalCenter
                       text: modelData.isFile ? "󰈤" : "󰈙"
                       color: Color.accent
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.subtitle
                     }
 
@@ -1481,12 +1469,10 @@ Panel {
                       width: parent.width - Style.space(110)
                       spacing: Style.space(2)
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         width: parent.width
                         text: modelData.name
                         color: root.fg
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.body
                         font.bold: true
                         elide: Text.ElideRight
@@ -1495,26 +1481,20 @@ Panel {
                       Row {
                         spacing: Style.space(6)
 
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           text: Model.sendExpiryLabel(modelData, Date.now())
                           color: Model.sendExpiryLabel(modelData, Date.now()) === "expired" ? root.urgent : root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                         }
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           text: "\u00b7 " + Model.sendAccessLabel(modelData)
                           color: root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                         }
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           visible: modelData.passwordSet
                           text: "\u00b7 󰌾 password"
                           color: Color.accent
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                         }
                       }
@@ -1571,12 +1551,11 @@ Panel {
                 width: parent.width
                 spacing: Style.space(6)
 
-                Button {
+                PanelButton {
                   text: "Hide text by default"
                   tooltipText: "The recipient must click to reveal it"
                   selected: root.vault.sendFormHidden
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.sendFormHidden = !root.vault.sendFormHidden
                 }
@@ -1612,14 +1591,13 @@ Panel {
                 enabled: !root.vault.sendBusy
               }
 
-              Button {
+              PanelButton {
                 width: parent.width
                 text: root.vault.sendBusy ? "Creating..." : "Create Send & Copy Link"
                 iconText: root.vault.sendBusy ? "󰑐" : "󰒗"
                 iconSpinning: root.vault.sendBusy
                 selected: true
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 enabled: !root.vault.sendBusy
                 onClicked: root.vault.submitCreateSend()
               }
@@ -1661,35 +1639,29 @@ Panel {
             }
           }
 
-          Text {
-            textFormat: Text.PlainText
+          PanelNote {
             visible: root.vault.accountRows.length === 0
-            width: parent.width
             text: "No accounts yet. Log in to add the first one."
             color: root.dim
-            font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
           }
 
           Row {
             width: parent.width
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               text: "Add Account"
               iconText: "󰐕"
               selected: root.vault.accountIndex === root.vault.accountRows.length
               accent: Color.accent
-              fontFamily: root.fontFamily
               enabled: root.vault.canChangeAccount() && !root.vault.accountsFull
               onClicked: root.vault.beginAddAccount()
             }
 
-            Button {
+            PanelButton {
               text: "Back"
               iconText: "󰁍"
-              fontFamily: root.fontFamily
               onClicked: root.vault.closeAccounts()
             }
           }
@@ -1698,19 +1670,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0e: FINGERPRINT SETUP
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: fpFlick
           visible: root.vault.activeScreen === "fingerprint"
           width: parent.width
           height: Math.min(Style.space(520), fpCol.implicitHeight)
-          contentWidth: width
           contentHeight: fpCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: fpFlick }
 
           Column {
             id: fpCol
@@ -1725,14 +1690,10 @@ Panel {
               title: "Enable fingerprint unlock"
               body: "A fingerprint proves you are present but releases no secret, so it cannot decrypt anything by itself. Your master password is already stored encrypted and sealed to this machine; enabling this adds a way for a verified fingerprint to open it."
 
-              Text {
-                textFormat: Text.PlainText
-                width: parent.width
+              PanelNote {
                 text: "Honest limit: with fingerprint unlock on, a program running as you while you are logged in can open the stored password without your finger. A PIN or a FIDO2 key cannot be bypassed that way."
                 color: root.urgent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
               }
             }
 
@@ -1754,36 +1715,30 @@ Panel {
                 enabled: !root.vault.fpBusy
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelNote {
                 visible: root.vault.fpError !== ""
-                width: parent.width
                 text: root.vault.fpError
                 color: root.urgent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
               }
 
               Row {
                 width: parent.width
                 spacing: Style.space(8)
 
-                Button {
+                PanelButton {
                   text: root.vault.fpBusy ? "Checking..." : "Enable"
                   iconText: root.vault.fpBusy ? "󰑐" : "󰈷"
                   iconSpinning: root.vault.fpBusy
                   selected: true
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   enabled: !root.vault.fpBusy
                   onClicked: root.vault.submitFingerprintSetup()
                 }
 
-                Button {
+                PanelButton {
                   text: "Cancel"
                   iconText: "󰅖"
-                  fontFamily: root.fontFamily
                   enabled: !root.vault.fpBusy
                   onClicked: { root.vault.fpError = ""; root.vault.currentScreen = "settings" }
                 }
@@ -1803,19 +1758,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0d: GENERATOR
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: genFlick
           visible: root.vault.activeScreen === "generator"
           width: parent.width
           height: Math.min(Style.space(520), genCol.implicitHeight)
-          contentWidth: width
           contentHeight: genCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: genFlick }
 
           Column {
             id: genCol
@@ -1828,21 +1776,19 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 text: root.vault.generatorFeedsForm ? "Back to item (Esc)" : "Back (Esc)"
                 iconText: "󰁍"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.closeGenerator()
               }
 
               // Only when opened from the item form: fill its password field
               // and return.
-              Button {
+              PanelButton {
                 visible: root.vault.generatorFeedsForm
                 text: "Use this password (Enter)"
                 iconText: "󰄬"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 selected: true
                 accent: Color.accent
@@ -1852,12 +1798,9 @@ Panel {
             }
 
             // Generated value
-            BorderSurface {
+            ValueBox {
               width: parent.width
               implicitHeight: Style.space(58)
-              radius: Style.cornerRadius
-              color: Style.hoverFillFor(root.fg, Color.accent)
-              borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
               Row {
                 anchors.fill: parent
@@ -1865,13 +1808,11 @@ Panel {
                 anchors.rightMargin: Style.space(6)
                 spacing: Style.space(4)
 
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(90)
                   text: root.vault.genBusy ? "Generating..." : (root.vault.genValue || "-")
                   color: Color.accent
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.subtitle
                   font.bold: true
                   wrapMode: Text.WrapAnywhere
@@ -1908,20 +1849,16 @@ Panel {
 
               Row {
                 width: parent.width
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   text: parent.parent.strength.label
                   color: Color.accent
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   font.bold: true
                 }
                 Item { width: Style.space(6); height: 1 }
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   text: "~" + parent.parent.strength.bits + " bits of entropy"
                   color: root.dim
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                 }
               }
@@ -1948,22 +1885,20 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 text: "Password"
                 iconText: "󰌆"
                 selected: root.vault.genOpts.type === "password"
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.setGenOpt("type", "password")
               }
 
-              Button {
+              PanelButton {
                 text: "Passphrase"
                 iconText: "󰈚"
                 selected: root.vault.genOpts.type === "passphrase"
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.setGenOpt("type", "passphrase")
               }
@@ -1987,44 +1922,39 @@ Panel {
                 width: parent.width
                 spacing: Style.space(6)
 
-                Button {
+                PanelButton {
                   text: "A-Z"
                   selected: root.vault.genOpts.uppercase
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("uppercase", !root.vault.genOpts.uppercase)
                 }
-                Button {
+                PanelButton {
                   text: "a-z"
                   selected: root.vault.genOpts.lowercase
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("lowercase", !root.vault.genOpts.lowercase)
                 }
-                Button {
+                PanelButton {
                   text: "0-9"
                   selected: root.vault.genOpts.numbers
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("numbers", !root.vault.genOpts.numbers)
                 }
-                Button {
+                PanelButton {
                   text: "!@#$%^&*"
                   selected: root.vault.genOpts.special
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("special", !root.vault.genOpts.special)
                 }
-                Button {
+                PanelButton {
                   text: "Avoid ambiguous"
                   tooltipText: "Exclude characters that are easy to confuse, such as l, 1, I, O and 0"
                   selected: root.vault.genOpts.ambiguous
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("ambiguous", !root.vault.genOpts.ambiguous)
                 }
@@ -2066,13 +1996,11 @@ Panel {
               Row {
                 width: parent.width
                 spacing: Style.space(10)
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(170)
                   text: "Word separator"
                   color: root.fg
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                 }
                 LineField {
@@ -2087,19 +2015,17 @@ Panel {
                 width: parent.width
                 spacing: Style.space(6)
 
-                Button {
+                PanelButton {
                   text: "Capitalize"
                   selected: root.vault.genOpts.capitalize
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("capitalize", !root.vault.genOpts.capitalize)
                 }
-                Button {
+                PanelButton {
                   text: "Include number"
                   selected: root.vault.genOpts.includeNumber
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("includeNumber", !root.vault.genOpts.includeNumber)
                 }
@@ -2111,19 +2037,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0c: PIN SETUP (scrolls: taller than the popup on small displays)
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: pinFlick
           visible: root.vault.activeScreen === "pin"
           width: parent.width
           height: Math.min(Style.space(520), pinCol.implicitHeight)
-          contentWidth: width
           contentHeight: pinCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: pinFlick }
 
           Column {
             id: pinCol
@@ -2157,12 +2076,10 @@ Panel {
               enabled: !root.vault.pinBusy
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: "PIN"
               // The label turns red too, visible while typing in Confirm.
               color: root.vault.pinSetupWeak ? root.urgent : root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
             }
@@ -2180,15 +2097,11 @@ Panel {
               foreground: root.vault.pinSetupWeak ? root.urgent : root.fg
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelNote {
               visible: root.vault.pinSetupWeak
-              width: parent.width
               text: "󰀪  " + Model.pinWeakWarning(root.vault.pinSetupPin)
               color: root.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
             }
 
             Text { textFormat: Text.PlainText; text: "CONFIRM PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
@@ -2203,36 +2116,30 @@ Panel {
               enabled: !root.vault.pinBusy
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelNote {
               visible: root.vault.pinError !== ""
-              width: parent.width
               text: root.vault.pinError
               color: root.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
             }
 
             Row {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 text: root.vault.pinBusy ? "Checking..." : "Save PIN"
                 iconText: root.vault.pinBusy ? "󰑐" : "󰄬"
                 iconSpinning: root.vault.pinBusy
                 selected: true
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 enabled: !root.vault.pinBusy
                 onClicked: root.vault.submitPinSetup()
               }
 
-              Button {
+              PanelButton {
                 text: "Cancel"
                 iconText: "󰅖"
-                fontFamily: root.fontFamily
                 enabled: !root.vault.pinBusy
                 onClicked: { root.vault.pinError = ""; root.vault.currentScreen = "settings" }
               }
@@ -2244,19 +2151,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0a: SETUP WIZARD (missing dependencies; scrolls)
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: setupFlick
           visible: root.vault.activeScreen === "setup"
           width: parent.width
           height: Math.min(Style.space(520), setupCol.implicitHeight)
-          contentWidth: width
           contentHeight: setupCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: setupFlick }
 
           Column {
             id: setupCol
@@ -2294,12 +2194,10 @@ Panel {
                 anchors.margins: Style.space(8)
                 spacing: Style.space(10)
 
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   anchors.verticalCenter: parent.verticalCenter
                   text: modelData.ready ? "󰄬" : (modelData.required ? "󰅖" : "󰋗")
                   color: modelData.ready ? Color.accent : (modelData.required ? root.urgent : root.dim)
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.subtitle
                 }
 
@@ -2309,74 +2207,54 @@ Panel {
 
                   Row {
                     spacing: Style.space(6)
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       text: modelData.label
                       color: root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.body
                       font.bold: true
                     }
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       anchors.verticalCenter: parent.verticalCenter
                       text: modelData.required ? "required" : "optional"
                       color: root.dim
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                     }
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
-                    width: parent.width
+                  PanelNote {
                     text: modelData.purpose
                     color: root.dim
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelNote {
                     visible: !!modelData.note
-                    width: parent.width
                     text: modelData.note
                     color: root.urgent
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
 
                   // Auto-type needs a key as well as wtype; registering one
                   // is under its setting.
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelNote {
                     visible: depCard.modelData.key === "wtype" && root.vault.autoTypeKeybind.setupNote !== ""
-                    width: parent.width
                     text: root.vault.autoTypeKeybind.setupNote
                     color: root.vault.autoTypeKeybind.bound ? root.dim : root.urgent
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
 
                   // A setup row needs more than the package (an enrolled
                   // finger, the PAM stack); only the setup command does that.
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelNote {
                     visible: modelData.setup && modelData.installed && !modelData.ready
-                    width: parent.width
                     text: "Reader stack is installed, but no finger is enrolled yet."
                     color: root.urgent
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
                 }
 
                 // One button per row, whichever door this row goes through.
-                Button {
+                PanelButton {
                   anchors.verticalCenter: parent.verticalCenter
                   visible: modelData.setup ? !modelData.ready : !modelData.installed
                   text: modelData.setup ? "Set up" : "Install"
@@ -2384,7 +2262,6 @@ Panel {
                   tooltipText: modelData.setup
                     ? "omarchy setup security fingerprint"
                     : root.vault.installHint([modelData.pkg])
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.installOne(modelData)
                 }
@@ -2396,31 +2273,28 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               text: "Re-check"
               iconText: "󰑐"
-              fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.vault.checkDependencies()
             }
 
             // Installs every missing package, optional ones included.
-            Button {
+            PanelButton {
               visible: root.vault.installablePackages.length > 0
               text: root.vault.installablePackages.length > 1 ? "Install all missing" : "Install"
               iconText: "󰐕"
               selected: true
               accent: Color.accent
               tooltipText: root.vault.installHint(root.vault.installablePackages)
-              fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.vault.installMissing()
             }
 
-            Button {
+            PanelButton {
               text: root.vault.missingRequired.length > 0 ? "Continue anyway" : "Done"
               iconText: "󰁍"
-              fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.vault.dismissSetup()
             }
@@ -2470,20 +2344,17 @@ Panel {
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(8)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: root.vault.settingsFlash !== ""
                 text: "󰄬 " + root.vault.settingsFlash
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
 
-              Button {
+              PanelButton {
                 text: "Back (Esc)"
                 iconText: "󰁍"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.closeSettings()
               }
@@ -2608,18 +2479,14 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: Style.space(2)
 
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       width: parent.width
                       text: modelData.label
                       color: blocked ? root.dim : root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.body
                     }
 
-                    Text {
-                      textFormat: Text.PlainText
-                      width: parent.width
+                    PanelNote {
                       // `|| ""`: also evaluated for heading rows, which have no
                       // description.
                       text: blocked
@@ -2627,9 +2494,7 @@ Panel {
                         : (modelData.description || "")
                           + (root.vault.settingNote(modelData) ? "\n\n" + root.vault.settingNote(modelData) : "")
                       color: root.dim
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
-                      wrapMode: Text.WordWrap
                     }
                   }
 
@@ -2668,13 +2533,11 @@ Panel {
                       }
                     }
 
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       anchors.verticalCenter: parent.verticalCenter
                       visible: modelData.type === "int" && !!modelData.unit
                       text: modelData.unit || ""
                       color: root.dim
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                     }
 
@@ -2693,12 +2556,10 @@ Panel {
                   }
                 }
 
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   visible: modelData.type === "int" && root.vault.settingValue(modelData) === 0 && !!modelData.zeroLabel
                   text: (modelData.zeroLabel || "") + " -- this is disabled."
                   color: root.urgent
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                 }
 
@@ -2740,58 +2601,43 @@ Panel {
               width: parent.width
               spacing: Style.space(4)
 
-              Text {
-                textFormat: Text.PlainText
-                width: parent.width
+              PanelNote {
                 text: "Plugin: " + (root.vault.pluginVersionLabel || "checking...")
                 color: root.fg
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
               }
 
-              Text {
-                textFormat: Text.PlainText
-                width: parent.width
+              PanelNote {
                 text: "bw CLI: " + (root.vault.dependencies && root.vault.dependencies.bwVersion
                   ? root.vault.dependencies.bwVersion : "unknown")
                 color: root.fg
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelNote {
                 visible: root.vault.updateAvailableVersion !== ""
-                width: parent.width
                 text: "Update available: " + root.vault.updateAvailableVersion
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 font.bold: true
-                wrapMode: Text.WordWrap
               }
 
               // Without a floating terminal helper there is nothing to
               // launch, so the command is shown to run by hand.
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 visible: root.vault.updateAvailableVersion !== "" && !root.vault.pluginUpdateCanLaunch
                 width: parent.width
                 text: "Run: " + root.vault.pluginUpdateCommandText
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 wrapMode: Text.WrapAnywhere
               }
 
-              Button {
+              PanelButton {
                 visible: root.vault.updateAvailableVersion !== "" && root.vault.pluginUpdateCanLaunch
                 text: "Update plugin"
                 iconText: "󰚰"
                 tooltipText: "Runs " + root.vault.pluginUpdateCommandText + " in a terminal"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.runPluginUpdate()
               }
@@ -2810,11 +2656,10 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 text: "Dependencies"
                 iconText: "󰏗"
                 tooltipText: "Check the tools this plugin needs"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: {
                   root.vault.setupDismissed = false
@@ -2842,31 +2687,28 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 visible: !root.vault.pluginDataConfirmPending
                 text: "Remove Plugin Data"
                 iconText: "󰩹"
                 tooltipText: "Clear the keyring entries, learned suggestions and exported public keys this plugin stored"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 enabled: !root.vault.pluginDataBusy
                 onClicked: root.vault.beginPluginDataRemoval()
               }
 
-              Button {
+              PanelButton {
                 visible: root.vault.pluginDataConfirmPending
                 text: "Remove Everything"
                 iconText: "󰩹"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 enabled: !root.vault.pluginDataBusy
                 onClicked: root.vault.beginPluginDataRemoval()
               }
 
-              Button {
+              PanelButton {
                 visible: root.vault.pluginDataConfirmPending
                 text: "Cancel"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.cancelPluginDataRemoval()
               }
@@ -2874,37 +2716,25 @@ Panel {
 
             // Must run before removal: `omarchy plugin remove` has no
             // uninstall hook.
-            Text {
-              textFormat: Text.PlainText
-              width: parent.width
+            PanelNote {
               visible: root.vault.pluginDataConfirmPending
               text: "This clears the stored master password, learned suggestions and exported public keys. "
                 + "Settings and your vault are untouched. It cannot be undone."
               color: root.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
-            Text {
-              textFormat: Text.PlainText
-              width: parent.width
+            PanelNote {
               visible: root.vault.pluginDataFlash !== ""
               text: root.vault.pluginDataFlash
               color: root.fg
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
-            Text {
-              textFormat: Text.PlainText
-              width: parent.width
+            PanelNote {
               text: "Saved to the plugin's entry in ~/.config/omarchy/shell.json via `omarchy bar set`."
               color: root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
                     }
           }
@@ -2920,12 +2750,10 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          Text {
-            textFormat: Text.PlainText
+          PanelText {
             width: parent.width
             text: "󰌆  An SSH key is needed"
             color: Color.accent
-            font.family: root.fontFamily
             font.pixelSize: Style.font.body
           }
 
@@ -2953,22 +2781,19 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               visible: !root.vault.sshAgentLoadActive
               text: "Not now"
               iconText: "󰅖"
               tooltipText: "Refuse this request (Esc)"
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.denySshRequest()
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               anchors.verticalCenter: parent.verticalCenter
               text: root.vault.sshPromptRemainingSec + "s left"
               color: root.vault.sshPromptRemainingSec <= 5 ? root.urgent : root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
             }
           }
@@ -2998,22 +2823,19 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               anchors.verticalCenter: parent.verticalCenter
               width: parent.width - accountBackBtn.width - Style.space(8)
               text: root.vault.addingAccount ? "Sign in to add another account." : "This account is signed out."
               color: root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               elide: Text.ElideRight
             }
 
-            Button {
+            PanelButton {
               id: accountBackBtn
               text: root.vault.addingAccount && root.vault.slotBeforeAdd !== "" ? "Cancel" : "Accounts"
               iconText: root.vault.addingAccount && root.vault.slotBeforeAdd !== "" ? "󰅖" : "󰀉"
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               enabled: root.vault.canChangeAccount()
               onClicked: root.vault.addingAccount && root.vault.slotBeforeAdd !== ""
@@ -3025,11 +2847,10 @@ Panel {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               text: "Email & Password"
               iconText: "󰇮"
               selected: root.vault.loginMethod === "email"
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: {
                 root.vault.invalidateEmailLoginPrewarm()
@@ -3038,11 +2859,10 @@ Panel {
               }
             }
 
-            Button {
+            PanelButton {
               text: "API Key"
               iconText: "󰌋"
               selected: root.vault.loginMethod === "apikey"
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: {
                 root.vault.invalidateEmailLoginPrewarm()
@@ -3057,11 +2877,9 @@ Panel {
             width: parent.width
             spacing: Style.space(5)
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: "SERVER REGION"
               color: root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
             }
@@ -3070,26 +2888,23 @@ Panel {
               anchors.horizontalCenter: parent.horizontalCenter
               spacing: Style.space(6)
 
-              Button {
+              PanelButton {
                 text: "US"
                 selected: root.vault.loginServerRegion === "us"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 onClicked: root.vault.selectLoginServerRegion("us")
               }
 
-              Button {
+              PanelButton {
                 text: "EU"
                 selected: root.vault.loginServerRegion === "eu"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 onClicked: root.vault.selectLoginServerRegion("eu")
               }
 
-              Button {
+              PanelButton {
                 text: "Custom"
                 selected: root.vault.loginServerRegion === "custom"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 onClicked: root.vault.selectLoginServerRegion("custom")
               }
@@ -3165,12 +2980,11 @@ Panel {
                   // Kept from input methods while shown, too.
                   inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 }
-                Button {
+                PanelButton {
                   id: eyeBtnLogin
                   property bool revealed: false
                   iconText: revealed ? "󰈉" : "󰈈"
                   tooltipText: revealed ? "Hide password" : "Show password"
-                  fontFamily: root.fontFamily
                   onClicked: revealed = !revealed
                 }
               }
@@ -3183,24 +2997,18 @@ Panel {
               width: parent.width
               spacing: Style.space(3)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 text: "NEW DEVICE VERIFICATION"
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
               }
 
-              Text {
-                textFormat: Text.PlainText
-                width: parent.width
+              PanelNote {
                 text: "Bitwarden has not seen this machine before and emailed a code to "
                   + "your login address. This is asked once per device."
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
               }
 
               LineField {
@@ -3212,14 +3020,13 @@ Panel {
                 onAccepted: root.vault.submitDeviceVerification()
               }
 
-              Button {
+              PanelButton {
                 width: parent.width
                 text: root.vault.isLoading ? "Verifying device..." : "Verify Device & Unlock"
                 iconText: root.vault.isLoading ? "󰑐" : "󰌋"
                 iconSpinning: root.vault.isLoading
                 selected: true
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 enabled: !root.vault.isLoading
                 onClicked: root.vault.submitDeviceVerification()
               }
@@ -3228,19 +3035,17 @@ Panel {
                 width: parent.width
                 spacing: Style.space(6)
 
-                Button {
+                PanelButton {
                   text: "Back to credentials"
                   iconText: "󰁍"
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.backToCredentials()
                 }
 
                 // A real terminal can answer anything this path cannot.
-                Button {
+                PanelButton {
                   text: "Use Terminal Instead"
                   iconText: "󰞷"
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.launchTerminalLogin()
                 }
@@ -3254,24 +3059,18 @@ Panel {
               width: parent.width
               spacing: Style.space(6)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 text: "TWO-STEP METHOD"
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
               }
 
-              Text {
-                textFormat: Text.PlainText
-                width: parent.width
+              PanelNote {
                 text: "Which one do you use for this account? Bitwarden is asked for a code "
                   + "only after you choose, and the choice is remembered for next time."
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
               }
 
               Repeater {
@@ -3281,31 +3080,25 @@ Panel {
                   width: parent.width
                   spacing: Style.space(2)
 
-                  Button {
+                  PanelButton {
                     width: parent.width
                     text: modelData.label
                     iconText: "󰌋"
-                    fontFamily: root.fontFamily
                     enabled: !root.vault.isLoading
                     onClicked: root.vault.chooseTwoFactorMethod(modelData.method)
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
-                    width: parent.width
+                  PanelNote {
                     text: modelData.hint
                     color: root.dim
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
                 }
               }
 
-              Button {
+              PanelButton {
                 text: "Back to credentials"
                 iconText: "󰁍"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 onClicked: root.backToCredentials()
               }
@@ -3317,13 +3110,11 @@ Panel {
               width: parent.width
               spacing: Style.space(3)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 text: root.vault.login2faMethodLabel
                   ? "TWO-STEP CODE (" + root.vault.login2faMethodLabel.toUpperCase() + ")"
                   : "TWO-STEP VERIFICATION CODE (2FA)"
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
               }
@@ -3344,19 +3135,17 @@ Panel {
                 width: parent.width
                 spacing: Style.space(6)
 
-                Button {
+                PanelButton {
                   text: "Back to credentials"
                   iconText: "󰁍"
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.backToCredentials()
                 }
 
                 // The only way back to the question once remembered.
-                Button {
+                PanelButton {
                   text: "Change method"
                   iconText: "󰑐"
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: {
                     root.vault.invalidateEmailLoginPrewarm()
@@ -3366,7 +3155,7 @@ Panel {
               }
             }
 
-            Button {
+            PanelButton {
               // For the stages that use the ordinary login command.
               visible: !root.vault.show2faMethodPicker && !root.vault.showDeviceCodeField
               width: parent.width
@@ -3375,7 +3164,6 @@ Panel {
               iconSpinning: !root.vault.logoutCleanupFailed && (root.vault.logoutPending || root.vault.isLoading)
               selected: true
               accent: Color.accent
-              fontFamily: root.fontFamily
               enabled: root.vault.logoutCleanupFailed || (!root.vault.logoutPending && !root.vault.isLoading)
               onClicked: root.vault.logoutCleanupFailed ? root.vault.retryLogoutCleanup() : root.vault.submitLogin()
             }
@@ -3431,14 +3219,13 @@ Panel {
               }
             }
 
-            Button {
+            PanelButton {
               width: parent.width
               text: root.vault.logoutCleanupFailed ? "Retry Logout Cleanup" : (root.vault.logoutPending ? "Finishing logout..." : (root.vault.isLoading ? "Logging in..." : "Log In with API Key"))
               iconText: root.vault.logoutCleanupFailed ? "󰑐" : ((root.vault.logoutPending || root.vault.isLoading) ? "󰑐" : "󰌋")
               iconSpinning: !root.vault.logoutCleanupFailed && (root.vault.logoutPending || root.vault.isLoading)
               selected: true
               accent: Color.accent
-              fontFamily: root.fontFamily
               enabled: root.vault.logoutCleanupFailed || (!root.vault.logoutPending && !root.vault.isLoading)
               onClicked: root.vault.logoutCleanupFailed ? root.vault.retryLogoutCleanup() : root.vault.submitLogin()
             }
@@ -3448,23 +3235,20 @@ Panel {
           Row {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(6)
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: root.vault.loginDeviceVerification
                 ? "Device verification needs a terminal:"
                 : "Prefer interactive TTY login?"
               color: root.vault.loginDeviceVerification ? Color.accent : root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: root.vault.loginDeviceVerification
               anchors.verticalCenter: parent.verticalCenter
             }
-            Button {
+            PanelButton {
               text: root.vault.loginDeviceVerification ? "Finish in Terminal" : "Launch Terminal"
               iconText: "󰞷"
               selected: root.vault.loginDeviceVerification
               accent: Color.accent
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.launchTerminalLogin()
             }
@@ -3493,23 +3277,21 @@ Panel {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               text: root.vault.accountCount > 1 ? "Switch Account" : "Add Account"
               iconText: "󰀉"
               tooltipText: root.vault.accountCount > 1
                 ? "Unlock another account; each keeps its own unlock methods"
                 : "Sign in to another account beside this one"
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               enabled: root.vault.canChangeAccount()
               onClicked: root.vault.accountCount > 1 ? root.vault.openAccounts() : root.vault.beginAddAccount()
             }
 
-            Button {
+            PanelButton {
               text: "Log Out"
               iconText: "󰍃"
               tooltipText: "Sign this account out and forget its unlock methods"
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.logoutAccount()
             }
@@ -3534,9 +3316,8 @@ Panel {
               id: searchField
               width: parent.width - (root.vault.searchQuery ? clearSearchBtn.width + Style.space(6) : 0)
               placeholderText: "Search items, usernames, URLs, public keys, fingerprints..."
-              // Bound, and never assigned here: an assignment (the old Escape
-              // and clear button) broke the binding, so a later clear (panel
-              // closed, lock) left the old text in the box.
+              // Bound, never assigned here: an assignment breaks the binding,
+              // and a later clear (panel closed, lock) leaves old text behind.
               text: root.vault.searchQuery
               onTextChanged: {
                 if (root.vault.searchQuery === text) return
@@ -3546,10 +3327,9 @@ Panel {
                 root.vault.scheduleFilterRebuild()
               }
               Keys.onPressed: function(event) {
-                // Ctrl+C arms the highlighted login from here, as Enter copies
-                // it: the box has focus when the panel opens, and the catcher's
-                // Ctrl+C never sees a key while it does. Only with nothing
-                // selected; a selection's Ctrl+C is the box's own copy.
+                // Ctrl+C arms the highlighted login: the box has focus when the
+                // panel opens, and the catcher never sees a key while it does.
+                // Only with nothing selected; a selection's Ctrl+C copies it.
                 if (searchField.selectedText === "" && root.armAutoTypeFromKey(event)) {
                   event.accepted = true
                   return
@@ -3615,24 +3395,20 @@ Panel {
               anchors.rightMargin: Style.space(6)
               spacing: Style.space(6)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 Layout.alignment: Qt.AlignVCenter
                 text: "󰌠"
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 Layout.alignment: Qt.AlignVCenter
                 Layout.fillWidth: true
                 // "Title", not "site": a page writes its own title, so this
                 // names what the title says, never a verified address.
                 text: "Matches window title: " + (root.vault.detectedContext ? root.vault.detectedContext.displayName : "active window")
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
                 elide: Text.ElideRight
@@ -3748,11 +3524,9 @@ Panel {
                         spacing: Style.space(4)
                         width: parent.width
 
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           text: itemData.name
                           color: root.fg
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.body
                           font.bold: true
                           elide: Text.ElideRight
@@ -3772,23 +3546,19 @@ Panel {
                         }
 
                         // Asks for the master password before its secrets.
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           visible: root.asksMasterPassword(itemData)
                           text: "\u{F033E}"
                           color: root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.bodySmall
                           anchors.verticalCenter: parent.verticalCenter
                         }
 
                         // Attachments badge; names are in the detail view.
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           visible: Boolean(itemData.hasAttachments)
                           text: "󰏢"
                           color: root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.bodySmall
                           anchors.verticalCenter: parent.verticalCenter
                         }
@@ -3798,31 +3568,25 @@ Panel {
                         spacing: Style.space(4)
                         width: parent.width
 
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           visible: Boolean(itemData.isSuggested)
                           text: root.vault.learnedIds[itemData.id] ? "󰐾 Suggested" : "󰌠 Suggested"
                           color: Color.accent
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                           font.bold: true
                         }
 
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           visible: Boolean(itemData.organizationId)
                           text: "󰓹 Org"
                           color: Color.accent
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                           font.bold: true
                         }
 
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
                           color: root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                           elide: Text.ElideRight
                           // Only what it needs, so the folder tag keeps its place.
@@ -3833,16 +3597,14 @@ Panel {
                               - (rowFolderTag.visible ? Style.space(90) : 0))
                         }
 
-                        Text {
+                        PanelText {
                           id: rowFolderTag
-                          textFormat: Text.PlainText
                           // Only worth showing when it is not already implied by the filter.
                           // Not beside the detail, which names it: the pane is
                           // too narrow for it and the username both.
                           visible: Boolean(itemData.folderId) && root.vault.selectedFolder === "all" && !root.splitView
                           text: "· 󰉋 " + Model.folderName(root.vault.folders, itemData.folderId)
                           color: Qt.darker(root.dim, 1.1)
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                           elide: Text.ElideRight
                           width: Math.min(implicitWidth, Style.space(90))
@@ -3944,12 +3706,10 @@ Panel {
                   anchors.centerIn: parent
                   spacing: Style.space(6)
 
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelText {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: root.vault.isLoading && root.vault.items.length === 0 ? "󰑐" : (root.vault.items.length === 0 ? "󰞀" : "󰍡")
                     color: root.dim
-                    font.family: root.fontFamily
                     font.pixelSize: Style.space(36)
                     RotationAnimation on rotation {
                       running: root.vault.isLoading && root.vault.items.length === 0
@@ -3960,14 +3720,12 @@ Panel {
                     }
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelText {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: root.vault.isLoading && root.vault.items.length === 0
                       ? "Loading items..."
                       : root.vault.emptyListMessage()
                     color: root.dim
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                   }
                 }
@@ -4002,20 +3760,18 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
-                // Short, like the Sends screen's. Beside the list, it closes
-                // the pane rather than going anywhere.
-                // Icon-only beside the list, as are the others: the pane is
-                // too narrow for their labels on one line.
+              PanelButton {
+                // Short, like the Sends screen's. Beside the list it closes the
+                // pane, and is icon-only like the others: the pane is too
+                // narrow for their labels on one line.
                 text: root.splitView ? "" : "Back (Esc)"
                 iconText: root.splitView ? "󰅖" : "󰁍"
                 tooltipText: root.splitView ? "Close (Esc)" : ""
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.currentScreen = "main"
               }
 
-              Button {
+              PanelButton {
                 visible: Boolean(root.vault.detectedContext && root.vault.detectedContext.displayName && root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
                 readonly property bool pinned: Boolean(root.vault.detailItem
                   && Model.isAssociated(root.vault.associations, root.vault.detectedContext, root.vault.detailItem.id))
@@ -4026,39 +3782,35 @@ Panel {
                 // Window titles are untrusted; tooltips auto-detect markup.
                 tooltipText: Model.plainLabel((pinned ? "Stop suggesting this for " : "Always suggest this for ")
                   + (root.vault.detectedContext ? root.vault.detectedContext.displayName : ""))
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.toggleAssociation(root.vault.detailItem)
               }
 
               // Previous passwords, as Bitwarden's own clients offer them.
-              Button {
+              PanelButton {
                 visible: root.vault.detailHistoryCount > 0
                 text: root.splitView ? "" : "Password history (" + root.vault.detailHistoryCount + ")"
                 iconText: "󰋚"
                 tooltipText: root.splitView ? "Password history (" + root.vault.detailHistoryCount + ") (h)" : ""
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.openHistory()
               }
 
-              Button {
+              PanelButton {
                 visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
                 text: root.splitView ? "" : "Edit"
                 iconText: "󰏫"
                 tooltipText: root.splitView ? "Edit (e)" : ""
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.editDetailItem()
               }
 
-              Button {
+              PanelButton {
                 visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
                 text: root.splitView ? "" : "Delete"
                 iconText: "󰆴"
                 tooltipText: root.splitView ? "Delete (x)" : ""
                 accent: Color.urgent
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.showDeleteConfirm = true
               }
@@ -4084,28 +3836,24 @@ Panel {
                 horizontalItemAlignment: Grid.AlignHCenter
                 verticalItemAlignment: Grid.AlignVCenter
 
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   text: "Permanently delete this item?"
                   color: root.fg
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.bodySmall
                   font.bold: true
                 }
 
-                Button {
+                PanelButton {
                   text: "Confirm Delete"
                   iconText: "󰆴"
                   selected: true
                   accent: Color.urgent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.deleteCurrentItem()
                 }
 
-                Button {
+                PanelButton {
                   text: "Cancel"
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.showDeleteConfirm = false
                 }
@@ -4114,7 +3862,7 @@ Panel {
 
             PanelSeparator { width: parent.width }
 
-            Flickable {
+            PanelFlick {
               id: detailFlickable
               width: parent.width
               // Beside the list it fills the pane, so the list does not
@@ -4122,14 +3870,7 @@ Panel {
               height: root.splitView
                 ? Math.max(Style.space(120), vaultDetailColumn.height - y)
                 : Math.min(Style.space(380), detailContentColumn.implicitHeight)
-              contentWidth: width
               contentHeight: detailContentColumn.implicitHeight
-              clip: true
-              boundsBehavior: Flickable.StopAtBounds
-              flickableDirection: Flickable.VerticalFlick
-              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-              WheelScroll { view: detailFlickable }
 
               Column {
                 id: detailContentColumn
@@ -4161,11 +3902,9 @@ Panel {
                       spacing: Style.space(6)
                       width: parent.width
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         text: root.vault.detailItem ? root.vault.detailItem.name : "Loading..."
                         color: root.fg
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.title
                         font.bold: true
                         elide: Text.ElideRight
@@ -4181,41 +3920,33 @@ Panel {
                         font.pixelSize: Style.font.body
                       }
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         visible: root.asksMasterPassword(root.vault.detailItem)
                         text: "\u{F033E}"
                         color: root.dim
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.body
                       }
                     }
 
                     Row {
                       spacing: Style.space(6)
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         text: root.vault.detailItem ? Model.itemTypeLabel(root.vault.detailItem.typeCode) : ""
                         color: root.dim
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                       }
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         visible: Boolean(root.vault.detailItem && root.vault.detailItem.organizationId)
                         text: "• Shared Organization"
                         color: Color.accent
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                       }
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         visible: Boolean(root.vault.detailItem && root.vault.detailItem.folderId)
                         text: root.vault.detailItem
                           ? "• 󰉋 " + Model.folderName(root.vault.folders, root.vault.detailItem.folderId)
                           : ""
                         color: root.dim
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                       }
                     }
@@ -4228,30 +3959,23 @@ Panel {
                   width: parent.width
                   spacing: Style.space(4)
                   PanelSectionHeader { text: "PUBLIC KEY" }
-                  BorderSurface {
+                  ValueBox {
                     width: parent.width
                     implicitHeight: Math.max(Style.space(54), sshPublicKeyText.implicitHeight + Style.space(20))
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-                    Text {
+                    PanelText {
                       id: sshPublicKeyText
-                      textFormat: Text.PlainText
                       anchors.fill: parent
                       anchors.margins: Style.space(10)
                       text: root.vault.detailItem ? (root.vault.detailItem.publicKey || "No public key") : ""
                       color: root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       wrapMode: Text.WrapAnywhere
                     }
                   }
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelText {
                     visible: Boolean(root.vault.detailItem && root.vault.detailItem.fingerprint)
                     text: "Fingerprint: " + (root.vault.detailItem ? root.vault.detailItem.fingerprint : "")
                     color: root.dim
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     wrapMode: Text.WrapAnywhere
                   }
@@ -4276,25 +4000,20 @@ Panel {
 
                   PanelSectionHeader { text: "PASSWORD" }
 
-                  BorderSurface {
+                  ValueBox {
                     width: parent.width
                     implicitHeight: Style.space(34)
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                     Row {
                       anchors.fill: parent
                       anchors.leftMargin: Style.space(10)
                       anchors.rightMargin: Style.space(6)
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         anchors.verticalCenter: parent.verticalCenter
                         text: root.vault.isFieldRevealed("password")
                           ? root.vault.shownSecret("password", "") : Model.maskString(root.vault.detailPassword || "password")
                         color: root.fg
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.body
                         elide: Text.ElideRight
                         width: parent.width - passActions.width - Style.space(10)
@@ -4333,23 +4052,18 @@ Panel {
                     width: parent.width
                     PanelSectionHeader { text: "VERIFICATION CODE (TOTP)" }
                     Item { Layout.fillWidth: true }
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       text: root.vault.totpSecRemaining + "s"
                       color: Color.accent
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       font.bold: true
                       Layout.alignment: Qt.AlignVCenter
                     }
                   }
 
-                  BorderSurface {
+                  ValueBox {
                     width: parent.width
                     implicitHeight: Style.space(44)
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                     Rectangle {
                       anchors.left: parent.left
@@ -4365,15 +4079,13 @@ Panel {
                       anchors.leftMargin: Style.space(12)
                       anchors.rightMargin: Style.space(6)
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         anchors.verticalCenter: parent.verticalCenter
                         // A flagged item's code stays hidden until revealed.
                         text: root.asksMasterPassword(root.vault.detailItem) && !root.vault.isFieldRevealed("totp")
                           ? "\u2022\u2022\u2022 \u2022\u2022\u2022"
                           : (root.vault.liveTotp ? (root.vault.liveTotp.length === 6 ? root.vault.liveTotp.slice(0, 3) + " " + root.vault.liveTotp.slice(3) : root.vault.liveTotp) : "Loading...")
                         color: Color.accent
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.title
                         font.bold: true
                         font.letterSpacing: 2.0
@@ -4417,24 +4129,19 @@ Panel {
 
                   Repeater {
                     model: root.vault.detailItem ? root.vault.detailItem.uris : []
-                    delegate: BorderSurface {
+                    delegate: ValueBox {
                       width: detailContentColumn.width
                       implicitHeight: Style.space(34)
-                      radius: Style.cornerRadius
-                      color: Style.hoverFillFor(root.fg, Color.accent)
-                      borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                       Row {
                         anchors.fill: parent
                         anchors.leftMargin: Style.space(10)
                         anchors.rightMargin: Style.space(6)
 
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           anchors.verticalCenter: parent.verticalCenter
                           text: modelData
                           color: root.fg
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.bodySmall
                           elide: Text.ElideRight
                           width: parent.width - openUriBtn.width - Style.space(10)
@@ -4479,16 +4186,13 @@ Panel {
 
                   Repeater {
                     model: root.vault.detailItem ? root.vault.detailItem.attachments : []
-                    delegate: BorderSurface {
+                    delegate: ValueBox {
                       readonly property string savedPath: root.vault.attachmentSavedPath(modelData.id)
                       readonly property bool busy: root.vault.attachmentBusyId === modelData.id
                       readonly property bool queued: root.vault.isAttachmentQueued(modelData.id)
 
                       width: detailContentColumn.width
                       implicitHeight: Style.space(34)
-                      radius: Style.cornerRadius
-                      color: Style.hoverFillFor(root.fg, Color.accent)
-                      borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                       Row {
                         anchors.fill: parent
@@ -4496,36 +4200,30 @@ Panel {
                         anchors.rightMargin: Style.space(6)
                         spacing: Style.space(6)
 
-                        Text {
+                        PanelText {
                           id: attachmentGlyph
-                          textFormat: Text.PlainText
                           anchors.verticalCenter: parent.verticalCenter
                           text: "󰈔"
                           color: root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.bodySmall
                         }
 
                         // The file name is vault text, so it is drawn as text.
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           anchors.verticalCenter: parent.verticalCenter
                           text: modelData.fileName
                           color: root.fg
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.bodySmall
                           elide: Text.ElideRight
                           width: Math.max(0, parent.width - attachmentGlyph.width
                             - attachmentStatus.width - attachmentActions.width - Style.space(34))
                         }
 
-                        Text {
+                        PanelText {
                           id: attachmentStatus
-                          textFormat: Text.PlainText
                           anchors.verticalCenter: parent.verticalCenter
                           text: busy ? "Saving..." : queued ? "Queued" : modelData.sizeName
                           color: root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                         }
 
@@ -4595,16 +4293,12 @@ Panel {
                     }
                   }
 
-                  BorderSurface {
+                  ValueBox {
                     width: parent.width
                     implicitHeight: notesText.implicitHeight + Style.space(16)
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
-                    Text {
+                    PanelText {
                       id: notesText
-                      textFormat: Text.PlainText
                       anchors.fill: parent
                       anchors.margins: Style.space(10)
                       // Notes (a Secure Note's whole content) stay hidden until
@@ -4616,7 +4310,6 @@ Panel {
                             : "Hidden. Use the eye button to show the notes.")
                           : root.vault.shownSecret("notes", ""))
                       color: root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.bodySmall
                       wrapMode: Text.Wrap
                     }
@@ -4754,26 +4447,21 @@ Panel {
                 }
 
                 // One block, not seven rows. An address is copied as an address.
-                BorderSurface {
+                ValueBox {
                   visible: root.vault.detailIsIdentity && root.vault.detailIdentityAddress !== ""
                   width: parent.width
                   implicitHeight: addressText.implicitHeight + Style.space(16)
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                   Row {
                     anchors.fill: parent
                     anchors.margins: Style.space(8)
                     spacing: Style.space(6)
 
-                    Text {
+                    PanelText {
                       id: addressText
-                      textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       text: root.vault.detailIdentityAddress
                       color: root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.body
                       wrapMode: Text.Wrap
                       width: parent.width - copyAddressBtn.width - Style.space(10)
@@ -4846,34 +4534,26 @@ Panel {
               width: parent.width - Style.space(24)
               spacing: Style.space(8)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: "󰞀"
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.space(40)
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 text: "No item selected"
                 color: root.fg
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.body
                 font.bold: true
               }
 
-              Text {
-                textFormat: Text.PlainText
-                width: parent.width
+              PanelNote {
                 horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
                 text: "Click an item, or press e on the highlighted one, to see its details here."
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
             }
@@ -4913,54 +4593,41 @@ Panel {
               height: Style.space(30)
               spacing: Style.space(8)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.vault.openFilterGroup === "folders" ? "󰉋"
                     : root.vault.openFilterGroup === "organizations" ? "󰦑"
                     : "󰀻"
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.vault.openFilterGroup === "folders" ? "FOLDERS"
                     : root.vault.openFilterGroup === "organizations" ? "ORGANIZATIONS"
                     : "TYPES"
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
               }
 
               Item { width: parent.width - Style.space(190); height: 1 }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: root.vault.currentFilterOptions.length > root.vault.currentFilterVisibleRows
                 text: root.vault.currentFilterOptions.length + " total"
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
             }
 
-            Flickable {
+            PanelFlick {
               id: filterOptionsList
               width: parent.width
               height: Math.min(root.vault.currentFilterVisibleRows, root.vault.currentFilterOptions.length) * root.vault.filterRowHeight
-              contentWidth: width
               contentHeight: filterOptionsCol.implicitHeight
-              clip: true
-              boundsBehavior: Flickable.StopAtBounds
-              flickableDirection: Flickable.VerticalFlick
-              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-              WheelScroll { view: filterOptionsList }
 
               // Keep the keyboard cursor in view when it runs past the fold.
               function revealCursor() {
@@ -5013,34 +4680,28 @@ Panel {
                       anchors.rightMargin: Style.space(10)
                       spacing: Style.space(8)
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         anchors.verticalCenter: parent.verticalCenter
                         text: modelData.icon
                         color: modelData.active ? Color.accent : root.dim
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.body
                       }
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         anchors.verticalCenter: parent.verticalCenter
                         width: parent.width - Style.space(50)
                         text: modelData.label
                         color: modelData.active ? Color.accent : root.fg
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
                         font.bold: modelData.active
                         elide: Text.ElideRight
                       }
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         anchors.verticalCenter: parent.verticalCenter
                         visible: modelData.active
                         text: "󰄬"
                         color: Color.accent
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
                       }
                     }
@@ -5104,21 +4765,18 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               text: "Back (Esc)"
               iconText: "󰁍"
-              fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.vault.closeHistory()
             }
           }
 
-          Text {
-            textFormat: Text.PlainText
+          PanelText {
             width: parent.width
             text: root.vault.detailItem ? "Password history: " + root.vault.detailItem.name : "Password history"
             color: root.fg
-            font.family: root.fontFamily
             font.pixelSize: Style.font.body
             font.bold: true
             elide: Text.ElideRight
@@ -5144,25 +4802,20 @@ Panel {
 
                 PanelSectionHeader { text: Model.formatHistoryDate(modelData.date).toUpperCase() }
 
-                BorderSurface {
+                ValueBox {
                   width: parent.width
                   implicitHeight: Style.space(34)
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                   Row {
                     anchors.fill: parent
                     anchors.leftMargin: Style.space(10)
                     anchors.rightMargin: Style.space(6)
 
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       anchors.verticalCenter: parent.verticalCenter
                       text: root.vault.isFieldRevealed(historyEntry.revealKey)
                         ? root.vault.shownSecret(historyEntry.revealKey, "") : Model.maskString(historyEntry.modelData.password || "password")
                       color: root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.body
                       elide: Text.ElideRight
                       width: parent.width - historyActions.width - Style.space(10)
@@ -5206,22 +4859,19 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               text: "Cancel (Esc)"
               iconText: "󰁍"
-              fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.vault.currentScreen = root.vault.formIsEditing ? "detail" : "main"
             }
 
             Item { Layout.fillWidth: true }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               Layout.alignment: Qt.AlignVCenter
               text: root.vault.formIsEditing ? "Edit Item" : "New Vault Item"
               color: root.fg
-              font.family: root.fontFamily
               font.pixelSize: Style.font.title
               font.bold: true
             }
@@ -5229,18 +4879,11 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          Flickable {
+          PanelFlick {
             id: editFlickable
             width: parent.width
             height: Math.min(Style.space(420), editFormCol.implicitHeight)
-            contentWidth: width
             contentHeight: editFormCol.implicitHeight
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            flickableDirection: Flickable.VerticalFlick
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-            WheelScroll { view: editFlickable }
 
             Column {
               id: editFormCol
@@ -5260,37 +4903,33 @@ Panel {
                 visible: !root.vault.formIsEditing
                 spacing: Style.space(8)
 
-                Button {
+                PanelButton {
                   text: "Login"
                   iconText: "󰌋"
                   selected: root.vault.formTypeCode === 1
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.changeFormType(1)
                 }
 
-                Button {
+                PanelButton {
                   text: "Secure Note"
                   iconText: "󰈙"
                   selected: root.vault.formTypeCode === 2
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.changeFormType(2)
                 }
-                Button {
+                PanelButton {
                   text: "Card"
                   iconText: "󰿯"
                   selected: root.vault.formTypeCode === 3
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.changeFormType(3)
                 }
 
-                Button {
+                PanelButton {
                   text: "Identity"
                   iconText: ""
                   selected: root.vault.formTypeCode === 4
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.changeFormType(4)
                 }
@@ -5316,31 +4955,23 @@ Panel {
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "FOLDER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
 
-                Button {
+                PanelButton {
                   width: parent.width
                   text: Model.plainLabel(root.vault.formFolderLabel())
                   iconText: root.vault.formPicker === "folder" ? "\u{F0140}" : "\u{F024B}"
                   selected: root.vault.formPicker === "folder"
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   leftAlign: true
                   onClicked: root.vault.toggleFormPicker("folder")
                 }
 
-                Flickable {
+                PanelFlick {
                   id: folderPickList
                   visible: root.vault.formPicker === "folder"
                   width: parent.width
                   height: visible ? Math.min(Style.space(150), folderPickCol.implicitHeight) : 0
-                  contentWidth: width
                   contentHeight: folderPickCol.implicitHeight
-                  clip: true
-                  boundsBehavior: Flickable.StopAtBounds
-                  flickableDirection: Flickable.VerticalFlick
-                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                  WheelScroll { view: folderPickList }
 
                   Column {
                     id: folderPickCol
@@ -5385,11 +5016,10 @@ Panel {
                     enabled: !root.vault.creatingFolder
                   }
 
-                  Button {
+                  PanelButton {
                     text: root.vault.creatingFolder ? "Adding..." : "Add"
                     iconText: root.vault.creatingFolder ? "\u{F0450}" : "\u{F0415}"
                     iconSpinning: root.vault.creatingFolder
-                    fontFamily: root.fontFamily
                     fontSize: Style.font.caption
                     enabled: !root.vault.creatingFolder && root.vault.newFolderName.trim() !== ""
                     onClicked: root.vault.submitNewFolder()
@@ -5404,31 +5034,23 @@ Panel {
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "ORGANIZATION"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
 
-                Button {
+                PanelButton {
                   width: parent.width
                   text: Model.plainLabel(root.vault.formOrgLabel())
                   iconText: root.vault.formPicker === "organization" ? "\u{F0140}" : "\u{F0991}"
                   selected: root.vault.formPicker === "organization"
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   leftAlign: true
                   onClicked: root.vault.toggleFormPicker("organization")
                 }
 
-                Flickable {
+                PanelFlick {
                   id: orgPickList
                   visible: root.vault.formPicker === "organization"
                   width: parent.width
                   height: visible ? Math.min(Style.space(150), orgPickCol.implicitHeight) : 0
-                  contentWidth: width
                   contentHeight: orgPickCol.implicitHeight
-                  clip: true
-                  boundsBehavior: Flickable.StopAtBounds
-                  flickableDirection: Flickable.VerticalFlick
-                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                  WheelScroll { view: orgPickList }
 
                   Column {
                     id: orgPickCol
@@ -5468,54 +5090,39 @@ Panel {
                   Row {
                     width: parent.width
                     spacing: Style.space(6)
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       text: "COLLECTIONS"
                       color: root.vault.formCollectionIds.length === 0 ? root.urgent : root.dim
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       font.bold: true
                     }
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       text: root.vault.formCollectionsLoading
                         ? "loading..."
                         : (root.vault.formCollectionIds.length === 0
                             ? "pick at least one"
                             : root.vault.formCollectionIds.length + " selected")
                       color: root.vault.formCollectionIds.length === 0 ? root.urgent : root.dim
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                     }
                   }
 
-                  Flickable {
+                  PanelFlick {
                     id: collectionList
                     width: parent.width
                     height: Math.min(Style.space(150), collectionCol.implicitHeight)
-                    contentWidth: width
                     contentHeight: collectionCol.implicitHeight
-                    clip: true
-                    boundsBehavior: Flickable.StopAtBounds
-                    flickableDirection: Flickable.VerticalFlick
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                    WheelScroll { view: collectionList }
 
                     Column {
                       id: collectionCol
                       width: collectionList.width - root.scrollGutter
                       spacing: Style.space(2)
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelNote {
                         visible: !root.vault.formCollectionsLoading && root.vault.formCollections.length === 0
-                        width: parent.width
                         text: "No collections available in this organization."
                         color: root.dim
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
-                        wrapMode: Text.WordWrap
                       }
 
                       Repeater {
@@ -5537,17 +5144,12 @@ Panel {
               }
 
               // FIELD: Username (Login only)
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 1
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "USERNAME / EMAIL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "username or email address..."
-                  text: root.vault.formUsername
-                  onTextChanged: root.vault.formUsername = text
-                }
+                label: "USERNAME / EMAIL"
+                placeholderText: "username or email address..."
+                text: root.vault.formUsername
+                onTextChanged: root.vault.formUsername = text
               }
 
               // FIELD: Password with Generator (Login only)
@@ -5560,10 +5162,9 @@ Panel {
                   Text { textFormat: Text.PlainText; text: "PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                   Item { Layout.fillWidth: true }
                   // Opens the generator, which fills this field and returns.
-                  Button {
+                  PanelButton {
                     text: "Generate..."
                     iconText: "󰌆"
-                    fontFamily: root.fontFamily
                     fontSize: Style.font.caption
                     onClicked: root.vault.openGenerator()
                   }
@@ -5580,345 +5181,192 @@ Panel {
                     text: root.vault.formPassword
                     onTextChanged: root.vault.formPassword = text
                   }
-                  Button {
+                  PanelButton {
                     id: eyeBtnForm
                     iconText: root.vault.formPasswordRevealed ? "󰈉" : "󰈈"
                     tooltipText: root.vault.formPasswordRevealed ? "Hide password" : "Show password"
-                    fontFamily: root.fontFamily
                     onClicked: root.vault.formPasswordRevealed = !root.vault.formPasswordRevealed
                   }
                 }
               }
 
               // FIELD: TOTP Authenticator Key (Login only)
-              Column {
+              FormSecret {
                 visible: root.vault.formTypeCode === 1
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "AUTHENTICATOR KEY (TOTP SECRET)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                SecretField {
-                  width: parent.width
-                  placeholderText: "e.g. JBSWY3DPEHPK3PXP (optional)..."
-                  text: root.vault.formTotp
-                  onTextChanged: root.vault.formTotp = text
-                  iconFontFamily: root.fontFamily
-                }
+                label: "AUTHENTICATOR KEY (TOTP SECRET)"
+                placeholderText: "e.g. JBSWY3DPEHPK3PXP (optional)..."
+                text: root.vault.formTotp
+                onTextChanged: root.vault.formTotp = text
               }
 
               // FIELD: Website URL (Login only)
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 1
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "WEBSITE URL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "https://example.com/login..."
-                  text: root.vault.formUri
-                  onTextChanged: root.vault.formUri = text
-                }
+                label: "WEBSITE URL"
+                placeholderText: "https://example.com/login..."
+                text: root.vault.formUri
+                onTextChanged: root.vault.formUri = text
               }
 
               // -----------------------------------------------------------
               // FORM FIELDS: Card
               // -----------------------------------------------------------
               // Expiry as two boxes here: the vault stores two values.
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 3
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "CARDHOLDER NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "Name as printed on the card"
-                  text: root.vault.formCardholderName
-                  onTextChanged: root.vault.formCardholderName = text
-                }
+                label: "CARDHOLDER NAME"
+                placeholderText: "Name as printed on the card"
+                text: root.vault.formCardholderName
+                onTextChanged: root.vault.formCardholderName = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 3
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "BRAND"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "Visa, Mastercard, Amex..."
-                  text: root.vault.formCardBrand
-                  onTextChanged: root.vault.formCardBrand = text
-                }
+                label: "BRAND"
+                placeholderText: "Visa, Mastercard, Amex..."
+                text: root.vault.formCardBrand
+                onTextChanged: root.vault.formCardBrand = text
               }
-              Column {
+              FormSecret {
                 visible: root.vault.formTypeCode === 3
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "CARD NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                SecretField {
-                  width: parent.width
-                  placeholderText: "1234 5678 9012 3456"
-                  text: root.vault.formCardNumber
-                  onTextChanged: root.vault.formCardNumber = text
-                  iconFontFamily: root.fontFamily
-                }
+                label: "CARD NUMBER"
+                placeholderText: "1234 5678 9012 3456"
+                text: root.vault.formCardNumber
+                onTextChanged: root.vault.formCardNumber = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 3
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "EXPIRY MONTH"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "MM"
-                  text: root.vault.formCardExpMonth
-                  onTextChanged: root.vault.formCardExpMonth = text
-                }
+                label: "EXPIRY MONTH"
+                placeholderText: "MM"
+                text: root.vault.formCardExpMonth
+                onTextChanged: root.vault.formCardExpMonth = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 3
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "EXPIRY YEAR"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "YYYY"
-                  text: root.vault.formCardExpYear
-                  onTextChanged: root.vault.formCardExpYear = text
-                }
+                label: "EXPIRY YEAR"
+                placeholderText: "YYYY"
+                text: root.vault.formCardExpYear
+                onTextChanged: root.vault.formCardExpYear = text
               }
-              Column {
+              FormSecret {
                 visible: root.vault.formTypeCode === 3
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "SECURITY CODE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                SecretField {
-                  width: parent.width
-                  placeholderText: "CVV / CVC"
-                  text: root.vault.formCardCode
-                  onTextChanged: root.vault.formCardCode = text
-                  iconFontFamily: root.fontFamily
-                }
+                label: "SECURITY CODE"
+                placeholderText: "CVV / CVC"
+                text: root.vault.formCardCode
+                onTextChanged: root.vault.formCardCode = text
               }
 
               // -----------------------------------------------------------
               // FORM FIELDS: Identity
               // -----------------------------------------------------------
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "TITLE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "Mr, Ms, Dr..."
-                  text: root.vault.formIdTitle
-                  onTextChanged: root.vault.formIdTitle = text
-                }
+                label: "TITLE"
+                placeholderText: "Mr, Ms, Dr..."
+                text: root.vault.formIdTitle
+                onTextChanged: root.vault.formIdTitle = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "FIRST NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdFirstName
-                  onTextChanged: root.vault.formIdFirstName = text
-                }
+                label: "FIRST NAME"
+                text: root.vault.formIdFirstName
+                onTextChanged: root.vault.formIdFirstName = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "MIDDLE NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdMiddleName
-                  onTextChanged: root.vault.formIdMiddleName = text
-                }
+                label: "MIDDLE NAME"
+                text: root.vault.formIdMiddleName
+                onTextChanged: root.vault.formIdMiddleName = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "LAST NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdLastName
-                  onTextChanged: root.vault.formIdLastName = text
-                }
+                label: "LAST NAME"
+                text: root.vault.formIdLastName
+                onTextChanged: root.vault.formIdLastName = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "USERNAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdUsername
-                  onTextChanged: root.vault.formIdUsername = text
-                }
+                label: "USERNAME"
+                text: root.vault.formIdUsername
+                onTextChanged: root.vault.formIdUsername = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "COMPANY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdCompany
-                  onTextChanged: root.vault.formIdCompany = text
-                }
+                label: "COMPANY"
+                text: root.vault.formIdCompany
+                onTextChanged: root.vault.formIdCompany = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "EMAIL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "name@example.com"
-                  text: root.vault.formIdEmail
-                  onTextChanged: root.vault.formIdEmail = text
-                }
+                label: "EMAIL"
+                placeholderText: "name@example.com"
+                text: root.vault.formIdEmail
+                onTextChanged: root.vault.formIdEmail = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "PHONE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdPhone
-                  onTextChanged: root.vault.formIdPhone = text
-                }
+                label: "PHONE"
+                text: root.vault.formIdPhone
+                onTextChanged: root.vault.formIdPhone = text
               }
-              Column {
+              FormSecret {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "SOCIAL SECURITY NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                SecretField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdSsn
-                  onTextChanged: root.vault.formIdSsn = text
-                  iconFontFamily: root.fontFamily
-                }
+                label: "SOCIAL SECURITY NUMBER"
+                text: root.vault.formIdSsn
+                onTextChanged: root.vault.formIdSsn = text
               }
-              Column {
+              FormSecret {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "PASSPORT NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                SecretField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdPassport
-                  onTextChanged: root.vault.formIdPassport = text
-                  iconFontFamily: root.fontFamily
-                }
+                label: "PASSPORT NUMBER"
+                text: root.vault.formIdPassport
+                onTextChanged: root.vault.formIdPassport = text
               }
-              Column {
+              FormSecret {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "LICENCE NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                SecretField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdLicense
-                  onTextChanged: root.vault.formIdLicense = text
-                  iconFontFamily: root.fontFamily
-                }
+                label: "LICENCE NUMBER"
+                text: root.vault.formIdLicense
+                onTextChanged: root.vault.formIdLicense = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "ADDRESS LINE 1"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdAddress1
-                  onTextChanged: root.vault.formIdAddress1 = text
-                }
+                label: "ADDRESS LINE 1"
+                text: root.vault.formIdAddress1
+                onTextChanged: root.vault.formIdAddress1 = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "ADDRESS LINE 2"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdAddress2
-                  onTextChanged: root.vault.formIdAddress2 = text
-                }
+                label: "ADDRESS LINE 2"
+                text: root.vault.formIdAddress2
+                onTextChanged: root.vault.formIdAddress2 = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "ADDRESS LINE 3"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdAddress3
-                  onTextChanged: root.vault.formIdAddress3 = text
-                }
+                label: "ADDRESS LINE 3"
+                text: root.vault.formIdAddress3
+                onTextChanged: root.vault.formIdAddress3 = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "CITY / TOWN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdCity
-                  onTextChanged: root.vault.formIdCity = text
-                }
+                label: "CITY / TOWN"
+                text: root.vault.formIdCity
+                onTextChanged: root.vault.formIdCity = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "STATE / COUNTY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdState
-                  onTextChanged: root.vault.formIdState = text
-                }
+                label: "STATE / COUNTY"
+                text: root.vault.formIdState
+                onTextChanged: root.vault.formIdState = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "POSTAL CODE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdPostalCode
-                  onTextChanged: root.vault.formIdPostalCode = text
-                }
+                label: "POSTAL CODE"
+                text: root.vault.formIdPostalCode
+                onTextChanged: root.vault.formIdPostalCode = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "COUNTRY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdCountry
-                  onTextChanged: root.vault.formIdCountry = text
-                }
+                label: "COUNTRY"
+                text: root.vault.formIdCountry
+                onTextChanged: root.vault.formIdCountry = text
               }
 
               CustomFieldsEditor {
@@ -5928,35 +5376,28 @@ Panel {
               }
 
               // FIELD: Notes
-              Column {
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "NOTES"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "Additional secure notes..."
-                  text: root.vault.formNotes
-                  onTextChanged: root.vault.formNotes = text
-                }
+              FormLine {
+                label: "NOTES"
+                placeholderText: "Additional secure notes..."
+                text: root.vault.formNotes
+                onTextChanged: root.vault.formNotes = text
               }
 
               // Favorite Star Toggle
               Row {
                 spacing: Style.space(8)
-                Button {
+                PanelButton {
                   text: root.vault.formFavorite ? "★ In Favorites" : "☆ Add to Favorites"
                   selected: root.vault.formFavorite
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.formFavorite = !root.vault.formFavorite
                 }
               }
 
               // Enter saves from anywhere in the form, except while a picker
-              // has it. An editable text field claims Return before any
-              // Shortcut and calls submitForm() itself; this covers the rest
-              // (a masked field, or focus on no field).
+              // has it. An editable field claims Return before any Shortcut and
+              // calls submitForm() itself; this covers a masked field, or none.
               Shortcut {
                 sequences: ["Return", "Enter"]
                 enabled: root.vault.activeScreen === "edit" && root.vault.formPicker === "" && !root.vault.isLoading
@@ -5964,7 +5405,7 @@ Panel {
               }
 
               // Save Action Button
-              Button {
+              PanelButton {
                 width: parent.width
                 text: root.vault.isLoading
                   ? "Saving..."
@@ -5973,7 +5414,6 @@ Panel {
                 iconSpinning: root.vault.isLoading
                 selected: true
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 enabled: !root.vault.isLoading && root.vault.formPicker === ""
                 onClicked: root.vault.saveItemForm()
               }
@@ -5993,9 +5433,8 @@ Panel {
       }
 
       // Ctrl+K: a searchable list of what the highlighted row or open item
-      // can do (Model.itemActions()), each with its letter. Enter runs it, the
-      // arrows move, Escape returns to where the key was pressed. Overlaid
-      // with a scrim, like the re-prompt question.
+      // can do (Model.itemActions()), each with its letter. Escape returns to
+      // where the key was pressed. Overlaid with a scrim, like the re-prompt.
       Item {
         id: actionPalette
         anchors.fill: parent
@@ -6008,9 +5447,8 @@ Panel {
         // Where Ctrl+K was pressed: the screen, and whether from the search box.
         property string fromScreen: "main"
         property bool fromSearch: false
-        // The item Ctrl+K was pressed on. Actions run on this id, not on the
-        // row the cursor is on when Enter is pressed: a sync can reorder the
-        // list while the palette is open.
+        // The item Ctrl+K was pressed on. Actions run on this id, not the
+        // cursor's row: a sync can reorder the list while the palette is open.
         property string itemId: ""
         property var all: []
         readonly property var actions: shown ? Model.filterActions(all, query) : []
@@ -6114,11 +5552,9 @@ Panel {
             width: parent.width - Style.space(24)
             spacing: Style.space(8)
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: "\u{F0AE7}  Actions"
               color: Color.accent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.body
               font.bold: true
             }
@@ -6139,29 +5575,20 @@ Panel {
               }
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               visible: actionPalette.actions.length === 0
               width: parent.width
               text: actionPalette.all.length === 0 ? "This item has no actions." : "No matching action."
               color: root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
             }
 
-            Flickable {
+            PanelFlick {
               id: paletteList
               visible: actionPalette.actions.length > 0
               width: parent.width
               height: Math.min(actionPalette.visibleRows, actionPalette.actions.length) * actionPalette.rowHeight
-              contentWidth: width
               contentHeight: paletteRows.implicitHeight
-              clip: true
-              boundsBehavior: Flickable.StopAtBounds
-              flickableDirection: Flickable.VerticalFlick
-              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-              WheelScroll { view: paletteList }
 
               Column {
                 id: paletteRows
@@ -6191,8 +5618,7 @@ Panel {
                       onClicked: actionPalette.runAt(index)
                     }
 
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       anchors.verticalCenter: parent.verticalCenter
                       anchors.left: parent.left
                       anchors.leftMargin: Style.space(10)
@@ -6200,21 +5626,18 @@ Panel {
                       anchors.rightMargin: Style.space(8)
                       text: modelData.label
                       color: cursored ? Color.accent : root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.bodySmall
                       font.bold: cursored
                       elide: Text.ElideRight
                     }
 
-                    Text {
+                    PanelText {
                       id: keyHint
-                      textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       anchors.right: parent.right
                       anchors.rightMargin: Style.space(10)
                       text: modelData.key
                       color: root.dim
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                     }
                   }
@@ -6222,12 +5645,10 @@ Panel {
               }
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               width: parent.width
               text: "Enter runs  ·  ↑↓ moves  ·  Esc closes"
               color: root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
             }
           }

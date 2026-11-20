@@ -64,8 +64,9 @@
   cards their brand mark. The glyph stays until an icon has loaded and
   comes back if it fails. Only a login's first URI is used, and only a plain
   host name or IPv4 address from it goes into the request. **Show website
-  icons** (`showWebsiteIcons`, on by default as in Bitwarden) turns them
-  off, and with it nothing is fetched.
+  icons** (`showWebsiteIcons`) turns the website icons and card marks on;
+  it is off by default, and off nothing is fetched (see Security below).
+  The app marks are built in and show either way.
 - **The vault list and an item side by side.** An item opens in a pane
   beside the list, as in Bitwarden desktop, half each in a 470 px panel
   with the filter bar under both; the list drops its hover buttons and
@@ -212,7 +213,8 @@
   `rand_chacha` crate's ChaCha20 generator, keyed with 32 bytes read from
   the kernel (`/dev/urandom`) before the key is touched, and a request
   fails, alone, if they cannot be read. The advisory
-  has no fixed release and stays listed in `deny.toml`. Ed25519 keys never
+  is fixed in `rsa` 0.10.0; this release is still on 0.9, so it stays listed
+  in `deny.toml` until that upgrade. Ed25519 keys never
   had the problem. This needs the rebuilt SSH agent helper.
 - **A forwarded login's server is shown as the remote host's claim when
   that is all it is.** With agent forwarding (`ssh -A`), everything after
@@ -229,6 +231,22 @@
   open nor use a grant. With a helper from before this change the panel
   treats every forwarded login's server as claimed. This needs the rebuilt
   SSH agent helper.
+- **The unlock prompt opens on Wayland or not at all.** The prompt the
+  master password and PIN are typed into is a Quickshell of its own, which
+  took its display platform from the session: commonly `wayland;xcb`, and
+  the same when unset. Had it failed to reach the compositor it would have
+  opened as an X11 window under Xwayland, where every X11 program can read
+  what is typed. It is now started with `QT_QPA_PLATFORM=wayland`; where
+  Wayland cannot be reached the prompt fails, and the panel says so and
+  offers its own field.
+- **Website icons are off by default.** The icon is loaded by handing Qt
+  the icon service's URL, which holds the site's name. Turning **Show
+  website icons** on therefore tells the icon service which sites you have
+  saved, and for every login the service has no icon for, or whose icon Qt
+  cannot read, Qt writes that URL to the system journal. What the service
+  sends is decoded by whichever image plugin Qt has installed claims it.
+  The setting's text now says so, and nothing is fetched until you turn it
+  on.
 - **A list the panel refuses is no longer what the vault helper answers
   from.** The helper took each list read as its items the moment `bw` printed
   it, before the panel decided whether to show it. When the panel refused one
@@ -306,6 +324,19 @@
 
 ### Fixed
 
+- **An answer given as the vault opens reaches its SSH request.** A request
+  held for an unlock gets a new number once the keys are loaded; the helper
+  now names the request the new number belongs to and answers to the old one
+  until the panel has it, so a Deny pressed in that instant (or sent with
+  `sshReply` under the old number) is no longer lost. The request also keeps
+  the two minutes it was first given instead of starting them again.
+- **A restarted SSH agent helper cannot be answered through an old card.**
+  When the helper stops, every approval card, queued prompt and notification
+  of its requests is withdrawn, and an answer is only sent for a card the
+  running helper raised. A helper also starts numbering its requests at a
+  random value, so two runs do not share numbers. Before, Allow on a card
+  left by a helper that had exited could approve a different request of the
+  next one.
 - **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
   only ask for identities never move the auto-lock deadline; a test now holds
   that. Approving a signature, a person's own action, does.
@@ -385,6 +416,43 @@
   vault helper, a `bw` run that could not be started at all never reported
   an exit, so that reader (the item list, say) started nothing again until
   the shell was restarted. It now ends as a command that was not found.
+- **A download started right after another was cancelled.** Closing the
+  panel (or locking) stops an attachment that is still downloading; a
+  download asked for before that stopped one had ended started nothing and
+  took the stopped one's answer for its own: usually "Could not save the
+  attachment", rarely a row marked saved that opened the other file. It now
+  waits for the stopped download to end, whose answer is nobody's.
+- **A learned-picks file holding `null`.** A suggestions file
+  (`associations.json`) whose whole content was the word `null` made its
+  reader throw instead of starting from an empty store: the store was left
+  as it stood and the suggestions for the focused window were not worked
+  out again. Anything that is not an object now reads as empty, as broken
+  JSON already did. The version and a pick's count are now accepted only
+  as a number or as a string of one to nine digits: an object there threw
+  the same way, `true` passed for version 1, and forms such as `"1.0"`,
+  which used to be read as numbers, no longer are. A file with any other
+  version reads as empty, and any other count counts as one.
+- **A failure to write the SSH public key files is shown.** When the
+  `.pub` files Git signs with could not be written or removed (something
+  that is not a directory, or a symlink, at
+  `~/.local/share/qs-bitwarden-cli/ssh`, or no data directory), the reason
+  was recorded and drawn nowhere. It is now added to the line under **SSH
+  agent status** in Settings until an export or a removal succeeds. A
+  removal that could not delete a file no longer counts as one that
+  succeeded. The messages say "the public key directory" and no longer
+  name `~/.local/share/qs-bitwarden-cli/ssh`, which is not where it is
+  when `XDG_DATA_HOME` is set to another directory (empty, or
+  `$HOME/.local/share`, it is the same one).
+- **Deny on the notification of a request that was waiting for an unlock.**
+  A signing request that arrived while the vault was locked is shown on the
+  card as soon as the vault opens and is given its final number when its
+  keys have loaded. A notification put up in between kept the earlier
+  number, so its **Deny** was ignored and the request stayed on the card.
+  The notification now follows its request. It still cannot approve, and a
+  notification never answers for any request but the one it was shown for.
+  Where two waiting requests cannot be told apart (same key, program and
+  operation), the notification answers for neither, and the card is the
+  way to answer.
 
 ## [1.13.1] - 2026-11-18
 

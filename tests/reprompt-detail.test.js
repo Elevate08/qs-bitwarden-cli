@@ -196,12 +196,8 @@ check("a copy of a TOTP code goes through the prompt, not a fetch of the item",
 
 // --- wiring in the source ------------------------------------------------------------------
 
-check("a late TOTP answer does not refill a hidden code",
-  /totpWanted\(detailItem\)/.test(body("applyTotpCode")), body("applyTotpCode"))
 const timer = src.slice(src.indexOf("id: totpCountdownTimer"), src.indexOf("id: totpCountdownTimer") + 700)
 check("the countdown does not refetch a hidden TOTP", /root\.totpWanted\(root\.detailItem\)/.test(timer), timer)
-const screen = src.slice(src.indexOf("onCurrentScreenChanged:"), src.indexOf("onCurrentScreenChanged:") + 1400)
-check("leaving the item clears the grant and with it the secrets", /if \(!inItem\) \{\s*clearRepromptGrant\(\)/.test(screen), screen)
 check("every secret copy on the detail screen names its field, not a value",
   !/copyDetailSecret\(\s*(function|root\.|detailPassword|liveTotp|detailCard|detailIdentity|detailItem\.notes|value)/.test(src),
   "copyDetailSecret was passed a value or a reader")

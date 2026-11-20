@@ -129,7 +129,7 @@ Item {
   readonly property bool suggestOnOpen: Model.boolSetting("suggestOnOpen", setting("suggestOnOpen", true))
   // Bitwarden's "Show website icons", on by default as there; see
   // websiteIconUrl() in BitwardenModel.js.
-  readonly property bool showWebsiteIcons: Model.boolSetting("showWebsiteIcons", setting("showWebsiteIcons", true))
+  readonly property bool showWebsiteIcons: Model.boolSetting("showWebsiteIcons", setting("showWebsiteIcons", false))
   // The vault list and an item's detail side by side (the view decides
   // whether the screen is wide enough).
   readonly property bool sideBySide: Model.boolSetting("sideBySide", setting("sideBySide", true))
@@ -428,11 +428,7 @@ Item {
   //
   // An item with `reprompt` 1 asks for the master password before anything
   // secret of it is revealed, copied or edited, as Bitwarden's own clients
-  // do. withReprompt(item, callback) runs the
-  // callback at once for any other item, or once the password is confirmed:
-  // the Panel draws the prompt from repromptPending, repromptItemName,
-  // repromptError and repromptBusy, and answers with submitReprompt(password)
-  // or cancelReprompt(). The password is checked against the stored copy
+  // do (withReprompt()). The password is checked against the stored copy
   // when quick unlock has one, else by `bw` itself (verifyMasterPassword());
   // it travels in the environment, never argv, and is not kept. A success
   // lasts only while that item's detail stays open: closing it, opening
@@ -440,9 +436,8 @@ Item {
   //
   // With the vault helper the shell holds no item's secrets until a value is
   // revealed or the item is edited: the detail is drawn from the list row
-  // (Model.publicItemDetail()). Revealing and copying go through the helper
-  // (readDetailSecret(), copyDetailField()), after the prompt for a re-prompt
-  // item; editing asks for the whole item (withRevealedDetail()). Ending the
+  // (Model.publicItemDetail()), reveals and copies go through the helper, and
+  // editing asks for the whole item (withRevealedDetail()). Ending the
   // confirmation drops what was fetched.
   property bool repromptPending: false
   property string repromptItemId: ""
@@ -791,6 +786,10 @@ Item {
   // Over when a list is shown, and when a read is asked for by anything else
   // (loadItems()).
   property bool listCommitRetried: false
+  // The list read whose commit the helper has been asked for
+  // (listProc.committing), until it answers: vault rows without their
+  // secrets, cleared with them by dropVaultState().
+  property string listCommitText: ""
   // A new item's detail, covered by an SSH approval when its save answered:
   // { from: provisional id, to: saved id }, taken up when the detail is back
   // (resumeCreatedItem()).
@@ -956,7 +955,6 @@ Item {
   property int associationsEpoch: 0
   property int associationsReadEpoch: -1
   property bool sessionStorePending: false
-  property bool sessionClearPending: false
   // Which account's session the running store writes, and the accounts
   // whose session clears wait behind a running one: a switch can land
   // between a request and its run.
@@ -1405,19 +1403,32 @@ Item {
   // shows nothing and the list is read again, once; refused again, it is a
   // failed read.
   function commitStagedList(stage, rawJson) {
-    var epoch = vaultEpoch
-    var changes = vaultChanges
     listProc.committing = stage
-    vaultQuery("commitVault", { stage: stage }, function(ok) {
+    // The list itself waits in listCommitText, not in the answer's closure:
+    // a lock clears it, and a late answer then has nothing to show. The
+    // answer is made in commitAnswered(), a function of its own, because a
+    // closure made here would keep this call's `rawJson` alive with it.
+    listCommitText = rawJson
+    vaultQuery("commitVault", { stage: stage }, commitAnswered(stage, vaultEpoch, vaultChanges))
+  }
+
+  function commitAnswered(stage, epoch, changes) {
+    return function(ok) {
       // First, whatever the answer and whatever has happened since (the
       // vault closed, another session handed over, the helper gone): the
       // reader is free again, and a read that waited for this answer runs,
       // unless a later run or commit of the reader's is now what it waits
       // for. A read queued for a vault since closed is only dropped.
-      if (listProc.committing === stage) listProc.committing = 0
+      var held = ""
+      if (listProc.committing === stage) {
+        listProc.committing = 0
+        held = root.listCommitText
+        root.listCommitText = ""
+      }
       var current = epoch === root.vaultEpoch
       var spinner = root.isLoading
-      if (ok && current) root.onListFinished(rawJson)
+      if (ok && current && held !== "") root.onListFinished(held)
+      held = ""
       if (!root.vaultProcBusy(listProc) && root.supersededVaultRead("items")) {
         root.isLoading = spinner
         return
@@ -1432,7 +1443,7 @@ Item {
       }
       if (root.itemChangeRunning()) root.listRereadOwed = true
       else if (changes !== root.vaultChanges) root.loadItems(false)
-    })
+    }
   }
 
   // The list read staged under `stage` will not be shown: the helper drops
@@ -1580,9 +1591,7 @@ Item {
   // holds its own ways in. Turning one off removes it from every account
   // (purgeQuickUnlockMethod()), and every envelope read removes a way in whose
   // setting is off (reconcileDisabledMethods()), which catches a setting
-  // turned off in shell.json while the shell was not running. Before, only the
-  // account on screen lost it, and the others kept a way in that the settings
-  // screen showed as "off".
+  // turned off in shell.json while the shell was not running.
 
   // Methods to purge once the unlock tool is ready.
   property var pendingPurges: []
@@ -2665,6 +2674,27 @@ Item {
     if (sshAgentProc.running && sshAgentProc.stdinEnabled) sshAgentProc.write(line)
   }
 
+  // Which run of the helper this is, and which one raised the cards and
+  // queued prompts now held. A helper numbers its requests itself, so a
+  // number means something only to the run that gave it: an answer goes to
+  // the helper only for a card that run raised (sshAgentDecide()), and when
+  // a helper stops or another is ready, every card is taken down before
+  // anything else is done with it (withdrawSshCards()).
+  property int sshAgentInstance: 0
+  property int sshCardsInstance: -1
+
+  // An Approve, Deny or unlock_cancelled, for a card of the running helper.
+  function sshAgentDecide(line) {
+    if (root.sshCardsInstance !== root.sshAgentInstance) return
+    sshAgentWrite(line)
+  }
+
+  function withdrawSshCards() {
+    root.sshAgentInstance += 1
+    if (root.sshPrompt !== null || root.sshUnlockRequest !== null
+        || root.sshPromptQueue.length > 0 || root.sshUnlockQueue.length > 0) dismissSshApproval()
+  }
+
   // Announce a cooldown that may have just started: it is the only
   // explanation for suddenly failing SSH commands.
   function noteSshCooldown() {
@@ -2746,6 +2776,7 @@ Item {
     root.sshPromptQueue = []
     root.sshPromotedOldId = null
     root.sshPromotedRaw = null
+    root.sshPromotedAmbiguous = false
     root.sshUnlockRequest = null
     root.sshUnlockRaw = null
     root.sshUnlockQueue = []
@@ -2816,25 +2847,28 @@ Item {
     // vault is kept open for. An identity listing (`ssh-add -l`) is neither,
     // and is not counted anywhere: see onSshAgentMessage().
     resetAutoLockTimer()
-    sshAgentWrite(Model.sshAgentApproveLine(sshPrompt.requestId, grantSeconds))
+    sshAgentDecide(Model.sshAgentApproveLine(sshPrompt.requestId, grantSeconds))
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "approved", Date.now())
     noteSshCooldown()
     advanceSshPrompt()
   }
 
   function denySshRequest() {
-    if (sshUnlockRequest) {
-      sshAgentWrite(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
-      root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
-      noteSshCooldown()
-      advanceSshUnlock()
-      return
-    }
+    // The approval first: with one up it is the card on screen (the panel's
+    // and the popup's alike), and a request waiting for an unlock behind it
+    // is not what was refused.
     if (sshPrompt) {
-      sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
+      sshAgentDecide(Model.sshAgentDenyLine(sshPrompt.requestId))
       root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
       noteSshCooldown()
       advanceSshPrompt()
+      return
+    }
+    if (sshUnlockRequest) {
+      sshAgentDecide(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
+      root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
+      noteSshCooldown()
+      advanceSshUnlock()
       return
     }
     dismissSshApproval()
@@ -2842,19 +2876,19 @@ Item {
 
   function denyAllSshRequests() {
     if (sshPrompt) {
-      sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
+      sshAgentDecide(Model.sshAgentDenyLine(sshPrompt.requestId))
     }
     for (var i = 0; i < root.sshPromptQueue.length; i++) {
       if (root.sshPromptQueue[i] && root.sshPromptQueue[i].requestId) {
-        sshAgentWrite(Model.sshAgentDenyLine(root.sshPromptQueue[i].requestId))
+        sshAgentDecide(Model.sshAgentDenyLine(root.sshPromptQueue[i].requestId))
       }
     }
     if (sshUnlockRequest) {
-      sshAgentWrite(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
+      sshAgentDecide(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
     }
     for (var j = 0; j < root.sshUnlockQueue.length; j++) {
       if (root.sshUnlockQueue[j] && root.sshUnlockQueue[j].requestId) {
-        sshAgentWrite(Model.sshAgentUnlockCancelledLine(root.sshUnlockQueue[j].requestId))
+        sshAgentDecide(Model.sshAgentUnlockCancelledLine(root.sshUnlockQueue[j].requestId))
       }
     }
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
@@ -2918,7 +2952,9 @@ Item {
   // notification must never collect. The notification can deny and nothing
   // else: its actions can be pressed by any program running as the user
   // (through the notification daemon), so approving stays on the card.
-  property int sshNotifyRequestId: -1
+  // A double, as every request id here is a plain number: an `int` holds
+  // nothing past 2^31, and an id it wrapped would match no card.
+  property double sshNotifyRequestId: -1
 
   function armSshNotifyFallback() {
     stopSshNotifyFallback()
@@ -2970,7 +3006,7 @@ Item {
   // --- Terminal replies ------------------------------------------------------
   function denyCurrentSshPrompt() {
     if (!sshPrompt) return
-    sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
+    sshAgentDecide(Model.sshAgentDenyLine(sshPrompt.requestId))
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
     noteSshCooldown()
     advanceSshPrompt()
@@ -2990,8 +3026,10 @@ Item {
     var text = String(idText || "").trim()
     var id = /^[0-9]{1,15}$/.test(text) ? Number(text) : -1
     var allow = decision === "allow"
-    if (id < 0 || (!allow && decision !== "deny")) return "invalid"
+    // 0 is no request: the helper numbers from 1, and writes 0 for "none".
+    if (id < 1 || (!allow && decision !== "deny")) return "invalid"
     if (allow && !root.sshAgentTerminalApproval) return "disabled"
+    id = sshCurrentRequestId(id)
     if (root.sshPrompt && root.sshPrompt.requestId === id) {
       if (allow) approveSshRequest(0)
       else denyCurrentSshPrompt()
@@ -3002,10 +3040,10 @@ Item {
       root.sshPromptQueue = queued
       if (allow) {
         resetAutoLockTimer()
-        sshAgentWrite(Model.sshAgentApproveLine(id, 0))
+        sshAgentDecide(Model.sshAgentApproveLine(id, 0))
         root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "approved", Date.now())
       } else {
-        sshAgentWrite(Model.sshAgentDenyLine(id))
+        sshAgentDecide(Model.sshAgentDenyLine(id))
         root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
       }
       noteSshCooldown()
@@ -3018,7 +3056,7 @@ Item {
       return "unknown"
     }
     if (root.sshUnlockRequest && root.sshUnlockRequest.requestId === id) {
-      sshAgentWrite(Model.sshAgentUnlockCancelledLine(id))
+      sshAgentDecide(Model.sshAgentUnlockCancelledLine(id))
       root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
       noteSshCooldown()
       advanceSshUnlock()
@@ -3027,35 +3065,86 @@ Item {
     var unlockLeft = Model.sshAgentRemovePrompt(root.sshUnlockQueue, id)
     if (unlockLeft.length !== root.sshUnlockQueue.length) {
       root.sshUnlockQueue = unlockLeft
-      sshAgentWrite(Model.sshAgentUnlockCancelledLine(id))
+      sshAgentDecide(Model.sshAgentUnlockCancelledLine(id))
       return "denied"
     }
     return "unknown"
   }
 
+  // The number a request answers to now, given one a terminal read for it
+  // (sshPendingJson()) before it was renumbered: the number its unlock
+  // prompt had is still its own once the card or a queued prompt carries
+  // the new one.
+  function sshCurrentRequestId(id) {
+    // Never 0 or less: that is the helper's "was never held", not a number.
+    if (!(id > 0)) return id
+    var raw = root.sshPromptRaw
+    if (root.sshPrompt && (root.sshPrompt.promotedFrom === id || (raw && raw.promotedFrom === id))) {
+      return root.sshPrompt.requestId
+    }
+    for (var i = 0; i < root.sshPromptQueue.length; i++) {
+      var queued = root.sshPromptQueue[i]
+      if (queued && queued.promotedFrom === id) return queued.requestId
+    }
+    return id
+  }
+
+  // A request held for an unlock comes back, once the keys are loaded, as an
+  // approval_required under a new id. The helper says which request it is
+  // (`promotedFrom`: the id the unlock prompt had), and answers to that id
+  // until then, so the card the promotion put up is the request's own by its
+  // number. The three properties here are for a helper from before that,
+  // which names nothing: adoptSshPrompt() goes by what the request looks like.
   property var sshPromotedOldId: null
   // The unlock_required message the shown prompt was promoted from. An unlock
   // releases every held request in no fixed order, so the first approval_required
   // to arrive is adopted only if it is this same request.
   property var sshPromotedRaw: null
+  // Another request held with it looked the same (same key, process and
+  // operation), or more were held than were kept: the approval that arrives
+  // first and looks like the card's may be the other one's (a helper from
+  // before the release order was fixed).
+  property bool sshPromotedAmbiguous: false
 
   function adoptSshPrompt(message) {
-    if (root.sshPromotedOldId !== null && root.sshPrompt
-        && Model.sshAgentSameRequest(root.sshPromotedRaw, message)) {
+    // Only the card the promotion put up: once that one was answered and
+    // another request is shown, an adoption would hand this request's id to
+    // the other's card.
+    var named = typeof message.promotedFrom === "number"
+    var same = named
+      ? message.promotedFrom > 0 && root.sshPrompt && root.sshPrompt.requestId === message.promotedFrom
+      : root.sshPromotedOldId !== null && root.sshPrompt
+        && root.sshPrompt.requestId === root.sshPromotedOldId
+        && Model.sshAgentSameRequest(root.sshPromotedRaw, message)
+    if (same) {
+      // A notification already up was shown for this request under its old
+      // id: its Deny stays this request's, and no other's. Where this may be
+      // another request that looks the same (the helper did not name it),
+      // the notification is nobody's: its Deny does nothing, and the card is
+      // answered on the card.
+      if (root.sshNotifyRequestId === root.sshPrompt.requestId) {
+        root.sshNotifyRequestId = !named && root.sshPromotedAmbiguous ? -1 : message.requestId
+      }
+      root.sshPrompt.promotedFrom = root.sshPrompt.requestId
       root.sshPrompt.requestId = message.requestId
       root.sshPromptRaw = message
       root.sshPromotedOldId = null
       root.sshPromotedRaw = null
+      root.sshPromotedAmbiguous = false
       return true
     }
     return false
   }
 
   function onSshAgentMessage(message) {
+    // What is raised or refused from here on is the running helper's.
+    if (message.type === "approval_required" || message.type === "unlock_required") {
+      root.sshCardsInstance = root.sshAgentInstance
+    }
     if (message.type === "approval_required") {
       // Refuse now rather than let the client wait out the deadline.
       if (!sshAgentMayPrompt()) {
-        sshAgentWrite(Model.sshAgentDenyLine(message.requestId))
+        sshAgentDecide(Model.sshAgentDenyLine(message.requestId))
         return
       }
       if (adoptSshPrompt(message)) return
@@ -3072,7 +3161,7 @@ Item {
     // does (approveSshRequest(), unlocking).
     if (message.type === "unlock_required") {
       if (!sshAgentMayPrompt()) {
-        sshAgentWrite(Model.sshAgentUnlockCancelledLine(message.requestId))
+        sshAgentDecide(Model.sshAgentUnlockCancelledLine(message.requestId))
         return
       }
       if (root.sshUnlockRequest !== null) {
@@ -3088,7 +3177,9 @@ Item {
     }
     if (message.type === "request_cancelled") {
       // The request was cancelled by the client, timed out, released on
-      // unlock, or answered by a grant the user just approved ("granted").
+      // unlock, or answered ("granted"): by a grant the user just approved,
+      // or by this panel under the id its unlock prompt had while its
+      // approval_required was still on the way here.
       var live = root.sshPrompt || root.sshUnlockRequest
       if (live && live.requestId === message.requestId) {
         if (message.reason === "granted") {
@@ -3273,6 +3364,8 @@ Item {
   onSshAgentUnlockOnDemandChanged: sendSshAgentOptions()
 
   onSshAgentGateOpenChanged: {
+    // First: nothing of the helper that was is answered or shown again.
+    withdrawSshCards()
     if (sshAgentGateOpen) sendSshAgentOptions()
     if (!sshAgentGateOpen) {
       endSshAgentLoad(false)
@@ -3333,6 +3426,8 @@ Item {
     var raw = root.sshUnlockRaw
     root.sshPromotedOldId = raw.requestId
     root.sshPromotedRaw = raw
+    root.sshPromotedAmbiguous = root.sshUnlockQueue.length >= 4
+      || root.sshUnlockQueue.some(function(other) { return Model.sshAgentSameRequest(raw, other) })
     root.sshUnlockRequest = null
     root.sshUnlockRaw = null
     root.sshUnlockQueue = []
@@ -3352,7 +3447,8 @@ Item {
     enabled: sshAgentEnabled,
     supervisable: sshAgentSupervisable,
     phase: sshAgentPhase,
-    errorCode: sshAgentErrorCode
+    errorCode: sshAgentErrorCode,
+    exportError: sshExportError
   })
 
   // -------------------------------------------------------------------------
@@ -3716,11 +3812,9 @@ Item {
   // It can also open underneath a pinentry that is already asking: showing
   // the popout makes the unlock form visible inside show(), before `opened`
   // reads true here, and the form asks pinentry on its own (UnlockForm.qml,
-  // armOfferedMethod()). beginPinentry() then saw a closed panel and hid
-  // nothing, and the panel kept the keyboard while pinentry waited for it
-  // (#132). Such an open is still the user's: its startup work runs now, as
-  // for a panel already open when pinentry was asked, and hideForPinentry()
-  // then hides it and has it shown again, as a resume, once pinentry answers.
+  // armOfferedMethod()), so beginPinentry() saw a closed panel and hid nothing
+  // (#132). Such an open is still the user's: its startup work runs now, and
+  // hideForPinentry() hides it until pinentry answers, then shows it again.
   // Deferred, so the hide neither runs inside the notification that is
   // showing the popout nor reads a `presenter` not yet re-evaluated.
   function panelShown() {
@@ -4732,10 +4826,8 @@ Item {
     var target = Model.isAccountSlot(slot) ? slot : activeSlot
     if (keyringClearProc.running) {
       if (sessionClearSlots.indexOf(target) === -1) sessionClearSlots = sessionClearSlots.concat([target])
-      sessionClearPending = true
       return
     }
-    sessionClearPending = false
     sessionClearRun = { slot: target, attempt: attempt || 1 }
     keyringClearProc.command = Model.keyringClearCommand(target)
     keyringClearProc.running = true
@@ -4848,8 +4940,7 @@ Item {
   // Process environments
   // -------------------------------------------------------------------------
 
-  // Secrets reach processes in the environment or on stdin, never argv
-  // (keyringStoreScript()).
+  // Secrets reach processes in the environment or on stdin, never argv.
 
   // BW_SESSION rather than --session keeps the token out of argv. Every `bw`
   // runs in the active account's data directory (accountAppDataEnv()).
@@ -5004,12 +5095,6 @@ Item {
   function pinEnv(pin) {
     var env = {}
     env[Model.pinEnvVar()] = String(pin || "")
-    return env
-  }
-
-  function secretEnv(value) {
-    var env = {}
-    env[Model.keyringSecretEnvVar()] = String(value || "")
     return env
   }
 
@@ -6310,10 +6395,10 @@ Item {
   // The master password (unlock, re-prompt) and the PIN are typed into the
   // plugin's own pinentry (pinentry/omarchy-pinentry), a separate process,
   // not into the panel: a string typed into the shell stays in its heap after
-  // it is cleared and lands in a shell core dump. The pinentry runs through the vault helper (Model.pinentryCommand()),
-  // which holds what was typed under a name; the shell sees only that name,
-  // and uses it like the password a quick-unlock method produced
-  // (Model.heldSecretRef()). Not available without the helper: while it is
+  // it is cleared and lands in a shell core dump. The pinentry runs through
+  // the vault helper (Model.pinentryCommand()), which holds what was typed
+  // under a name; the shell sees only that name (Model.heldSecretRef()).
+  // Not available without the helper: while it is
   // starting, restarting or left stopped the panel waits for it rather than
   // offer its own field, which is used only where Model.typedSecretEntry()
   // says (pinentry off, unable to run here or declined, or the vault held in
@@ -6321,10 +6406,9 @@ Item {
   // forms are not covered.
   //
   // Set only by a probe that ran to its end and found the prompt unable to
-  // run here (no frontend, or its `--check` failed: no quickshell, node,
-  // Wayland display or shell kit) (Model.pinentryProbeMissing()): a probe
-  // killed or still running leaves
-  // pinentry offered, for the same reason as below.
+  // run here (no frontend, or its `--check` failed) (Model.pinentryProbeMissing()):
+  // a probe killed or still running leaves pinentry offered, for the same
+  // reason as below.
   property bool pinentryMissing: false
   onPinentryMissingChanged: resetPinentryChoice()
   // A run that failed (a prompt that could not start, a helper that predates
@@ -6663,65 +6747,42 @@ Item {
         return
       }
       // A stored secret the vault rejects: say which method went stale.
-      if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
-        // Changed elsewhere: keep the method and remember the old password so
-        // the next typed unlock re-seals the envelope.
-        pendingUnlockFrom = ""
-        fingerprintFromEnvelope = false
-        rotationOldPassword = pendingUnlockPassword
-        pendingUnlockPassword = ""
-        fingerprintMessage = "Your master password was changed. Unlock with the new one once; fingerprint unlock will follow it."
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "fingerprint") {
-        pendingUnlockFrom = ""
-        requestMasterCredentialClear()
-        fingerprintStored = false
-        fingerprintMessage = "Stored password no longer valid. Unlock with your master password to re-enable fingerprint unlock."
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "fido" && fidoFromEnvelope) {
-        // Changed elsewhere, as for fingerprint.
-        pendingUnlockFrom = ""
-        fidoFromEnvelope = false
-        rotationOldPassword = pendingUnlockPassword
-        pendingUnlockPassword = ""
-        fidoUnlocker.failure = "Your master password was changed. Unlock with the new one once; FIDO2 unlock will follow it."
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "fido") {
-        pendingUnlockFrom = ""
-        fidoUnlocker.forget("Stored password no longer valid. Unlock with your master password to re-enable FIDO2 unlock.", false)
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "pin" && pinFromEnvelope) {
-        // Changed elsewhere, as for fingerprint.
-        pendingUnlockFrom = ""
-        pinFromEnvelope = false
-        rotationOldPassword = pendingUnlockPassword
-        pendingUnlockPassword = ""
-        pinUnlockError = "Your master password was changed. Unlock with the new one once; PIN unlock will follow it."
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "pin") {
-        pendingUnlockFrom = ""
-        clearPin()
-        pinUnlockError = "Your master password changed, so the PIN no longer works. Unlock with your password and set a new PIN."
+      if (pendingUnlockFrom === "fingerprint" || pendingUnlockFrom === "fido" || pendingUnlockFrom === "pin") {
+        if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
+          // Changed elsewhere: keep the method and remember the old password so
+          // the next typed unlock re-seals the envelope.
+          pendingUnlockFrom = ""
+          fingerprintFromEnvelope = false
+          rotationOldPassword = pendingUnlockPassword
+          pendingUnlockPassword = ""
+          fingerprintMessage = "Your master password was changed. Unlock with the new one once; fingerprint unlock will follow it."
+        } else if (pendingUnlockFrom === "fingerprint") {
+          pendingUnlockFrom = ""
+          requestMasterCredentialClear()
+          fingerprintStored = false
+          fingerprintMessage = "Stored password no longer valid. Unlock with your master password to re-enable fingerprint unlock."
+        } else if (pendingUnlockFrom === "fido" && fidoFromEnvelope) {
+          // Changed elsewhere, as for fingerprint.
+          pendingUnlockFrom = ""
+          fidoFromEnvelope = false
+          rotationOldPassword = pendingUnlockPassword
+          pendingUnlockPassword = ""
+          fidoUnlocker.failure = "Your master password was changed. Unlock with the new one once; FIDO2 unlock will follow it."
+        } else if (pendingUnlockFrom === "fido") {
+          pendingUnlockFrom = ""
+          fidoUnlocker.forget("Stored password no longer valid. Unlock with your master password to re-enable FIDO2 unlock.", false)
+        } else if (pendingUnlockFrom === "pin" && pinFromEnvelope) {
+          // Changed elsewhere, as for fingerprint.
+          pendingUnlockFrom = ""
+          pinFromEnvelope = false
+          rotationOldPassword = pendingUnlockPassword
+          pendingUnlockPassword = ""
+          pinUnlockError = "Your master password was changed. Unlock with the new one once; PIN unlock will follow it."
+        } else if (pendingUnlockFrom === "pin") {
+          pendingUnlockFrom = ""
+          clearPin()
+          pinUnlockError = "Your master password changed, so the PIN no longer works. Unlock with your password and set a new PIN."
+        }
         errorMessage = ""
         focusAppropriateField()
         Qt.callLater(prepareUnlock)
@@ -6839,10 +6900,9 @@ Item {
   //
   // Each lock runs with the environment of the moment it was asked for (the
   // session being locked and its account's data directory), one at a time.
-  // Its exit status used to be ignored: a failed lock is retried once, then
-  // `bw status` (with that session) says whether it is really still unlocked,
-  // and if so the user is told. The environment, which holds the session, is
-  // dropped as soon as the lock settles.
+  // A failed lock is retried once, then `bw status` (with that session) says
+  // whether it is really still unlocked, and if so the user is told. The
+  // environment, which holds the session, is dropped as soon as the lock settles.
   property var lockRun: null
   property var lockQueue: []
 
@@ -6959,6 +7019,7 @@ Item {
     // The helper drops what it had staged with the rest (forgetVault()).
     listProc.staged = 0
     listProc.committing = 0
+    listCommitText = ""
     listCommitRetried = false
     createdItemHandoff = null
     masterPassword = ""
@@ -8018,6 +8079,10 @@ Item {
       errorMessage = "Vault is locked or session expired. Please unlock your vault."
       return
     }
+    // A cancelled download still holds the process until its exit arrives:
+    // starting now would start nothing, and that run's answer would be taken
+    // for this one's. The job waits in the queue; the exit pumps again.
+    if (vaultProcBusy(attachmentProc)) return
     var next = attachmentQueue.slice()
     var job = next.shift()
     attachmentQueue = next
@@ -8032,6 +8097,12 @@ Item {
     var id = attachmentBusyId
     attachmentBusyId = ""
     attachmentBusyName = ""
+    // The exit of a cancelled download: nobody's answer. One asked for
+    // meanwhile starts now.
+    if (id === "") {
+      pumpAttachmentQueue()
+      return
+    }
     if (vaultReadIsStale("attachment")) return
     var path = String(savedPath || "").trim()
 
@@ -9726,37 +9797,25 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: screenLockStateProc
     command: Model.screenLockStateCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onScreenLockState(text)
-    }
+    onCollected: function(text) { root.onScreenLockState(text) }
   }
 
-  Process {
+  TextProcess {
     id: sshAgentHelperProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onSshAgentHelperInspected(text)
-    }
+    onCollected: function(text) { root.onSshAgentHelperInspected(text) }
   }
 
-  Process {
+  TextProcess {
     id: unlockKeyProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onUnlockKeyInspected(text)
-    }
+    onCollected: function(text) { root.onUnlockKeyInspected(text) }
   }
 
-  Process {
+  TextProcess {
     id: vaultHelperInspectProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onVaultHelperInspected(text)
-    }
+    onCollected: function(text) { root.onVaultHelperInspected(text) }
   }
 
   // The vault helper itself: requests on stdin, replies one per line.
@@ -9770,22 +9829,17 @@ Item {
     onExited: function(exitCode) { root.onVaultHelperExited(exitCode) }
   }
 
-  Process {
+  TextProcess {
     id: quickUnlockPrereqProc
     command: Model.quickUnlockPrereqCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onQuickUnlockPrereqs(text)
-    }
+    onCollected: function(text) { root.onQuickUnlockPrereqs(text) }
   }
 
   // Every envelope operation, one at a time; see queueEnvelopeJob().
   VaultProcess {
     id: envelopeProc
     vault: root
-    stdout: VaultCollector {
-      id: envelopeStdout
-    }
+    stdout: VaultCollector { id: envelopeStdout }
     onExited: function(exitCode) { root.onEnvelopeJobExited(exitCode) }
   }
 
@@ -9808,24 +9862,18 @@ Item {
     onExited: function(exitCode) { root.onSshExportFinished(exitCode, sshExportClearStdout.text) }
   }
 
-  Process {
+  TextProcess {
     id: loadIdProc
     command: Model.loadIdCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onSshAgentLoadIdRead(text)
-    }
+    onCollected: function(text) { root.onSshAgentLoadIdRead(text) }
   }
 
-  Process {
+  TextProcess {
     id: uwsmInspectProc
     command: Model.uwsmInspectCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.uwsmFragment = Model.parseUwsmInspection(text)
-        root.applyUwsmRestore()
-      }
+    onCollected: function(text) {
+      root.uwsmFragment = Model.parseUwsmInspection(text)
+      root.applyUwsmRestore()
     }
   }
 
@@ -9843,13 +9891,10 @@ Item {
     onExited: function(exitCode) { root.onUwsmActionFinished(exitCode, uwsmWriteStdout.text) }
   }
 
-  Process {
+  TextProcess {
     id: autoTypeKeybindInspectProc
     command: Model.autoTypeKeybindInspectCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onAutoTypeKeybindInspected(text)
-    }
+    onCollected: function(text) { root.onAutoTypeKeybindInspected(text) }
   }
 
   Process {
@@ -9981,9 +10026,7 @@ Item {
     id: statusProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: statusStdout
-    }
+    stdout: VaultCollector { id: statusStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(statusProc)) {
         root.onStatusProbeProcessFreed()
@@ -10005,9 +10048,7 @@ Item {
     // Set by refreshStatus(). Defaults to the discard form, so a run not
     // started there can never adopt a key.
     command: Model.sessionHandoffReadCommand(false)
-    stdout: VaultCollector {
-      id: sessionHandoffStdout
-    }
+    stdout: VaultCollector { id: sessionHandoffStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(sessionHandoffProc)) {
         root.onStatusProbeProcessFreed()
@@ -10023,9 +10064,7 @@ Item {
     capture: "session"
     session: false
     command: Model.keyringLookupCommand(root.activeSlot)
-    stdout: VaultCollector {
-      id: keyringLookupStdout
-    }
+    stdout: VaultCollector { id: keyringLookupStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(keyringLookupProc)) {
         root.onStatusProbeProcessFreed()
@@ -10062,9 +10101,7 @@ Item {
     id: listFoldersProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: listFoldersStdout
-    }
+    stdout: VaultCollector { id: listFoldersStdout }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(listFoldersProc)
       if (root.supersededVaultRead("folders") || scrub) return
@@ -10076,9 +10113,7 @@ Item {
     id: orgCollectionsProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: orgCollectionsStdout
-    }
+    stdout: VaultCollector { id: orgCollectionsStdout }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(orgCollectionsProc)
       if (root.supersededVaultRead("collections") || scrub) return
@@ -10105,7 +10140,10 @@ Item {
     stdout: VaultCollector { id: attachmentStdout }
     stderr: VaultCollector { id: attachmentStderr }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(attachmentProc)) return
+      if (root.finishScrubRun(attachmentProc)) {
+        root.pumpAttachmentQueue()
+        return
+      }
       root.onAttachmentDownloaded(exitCode, attachmentStdout.text, attachmentStderr.text)
     }
   }
@@ -10114,9 +10152,7 @@ Item {
     id: listSendsProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: listSendsStdout
-    }
+    stdout: VaultCollector { id: listSendsStdout }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(listSendsProc)
       if (root.supersededVaultRead("sends") || scrub) return
@@ -10260,13 +10296,10 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: keyringHasPinProc
     command: Model.keyringHasPinCommand(root.activeSlot)
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onPinConfiguredChecked(text)
-    }
+    onCollected: function(text) { root.onPinConfiguredChecked(text) }
   }
 
   Process {
@@ -10277,13 +10310,10 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: depsCheckProc
     command: Model.dependencyCheckCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onDependenciesChecked(text)
-    }
+    onCollected: function(text) { root.onDependenciesChecked(text) }
   }
 
   Process {
@@ -10291,10 +10321,7 @@ Item {
     property string probeId: ""
     command: Model.bwVersionCommand()
     environment: Model.withoutCompileCache({})
-    stdout: StdioCollector {
-      id: bwVersionStdout
-      waitForEnd: true
-    }
+    stdout: StdioCollector { id: bwVersionStdout; waitForEnd: true }
     onExited: function(exitCode) { root.onBwVersionProbed(bwVersionStdout.text, bwVersionProc.probeId) }
   }
 
@@ -10321,20 +10348,14 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: pluginVersionProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.pluginVersionInfo = Model.parsePluginVersionProbe(text)
-    }
+    onCollected: function(text) { root.pluginVersionInfo = Model.parsePluginVersionProbe(text) }
   }
 
-  Process {
+  TextProcess {
     id: updateCheckStateProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onUpdateCheckStateRead(text)
-    }
+    onCollected: function(text) { root.onUpdateCheckStateRead(text) }
   }
 
   Process {
@@ -10343,20 +10364,14 @@ Item {
     stdinEnabled: true
   }
 
-  Process {
+  TextProcess {
     id: updateCheckProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onUpdateCheckFinished(text)
-    }
+    onCollected: function(text) { root.onUpdateCheckFinished(text) }
   }
 
   Process {
     id: settingWriteProc
-    stderr: StdioCollector {
-      id: settingWriteStderr
-      waitForEnd: true
-    }
+    stderr: StdioCollector { id: settingWriteStderr; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
         root.settingsFlash = ""
@@ -10399,13 +10414,10 @@ Item {
     onTriggered: root.settingsFlash = ""
   }
 
-  Process {
+  TextProcess {
     id: keyringHasMasterProc
     command: Model.keyringHasMasterPasswordCommand(root.activeSlot)
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onFingerprintStoredChecked(text)
-    }
+    onCollected: function(text) { root.onFingerprintStoredChecked(text) }
   }
 
   VaultProcess {
@@ -10413,9 +10425,7 @@ Item {
     vault: root
     session: false
     command: Model.keyringLookupMasterPasswordCommand(root.activeSlot)
-    stdout: VaultCollector {
-      id: keyringLookupMasterStdout
-    }
+    stdout: VaultCollector { id: keyringLookupMasterStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(keyringLookupMasterProc)) return
       if (exitCode === 0) {
@@ -10489,13 +10499,10 @@ Item {
     onExited: function(exitCode) { root.onBwCompileCacheProbed(probeSeq, exitCode, bwCompileCacheOut.text) }
   }
 
-  Process {
+  TextProcess {
     id: accountsReadProc
     command: Model.accountRegistryReadCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onAccountRegistryLoaded(text)
-    }
+    onCollected: function(text) { root.onAccountRegistryLoaded(text) }
   }
 
   Process {
@@ -10516,15 +10523,12 @@ Item {
 
   // ---- Learned associations ----
 
-  Process {
+  TextProcess {
     id: associationsReadProc
     command: Model.associationsReadCommand(root.activeSlot)
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        if (root.finishScrubRun(associationsReadProc)) return
-        root.onAssociationsLoaded(text)
-      }
+    onCollected: function(text) {
+      if (root.finishScrubRun(associationsReadProc)) return
+      root.onAssociationsLoaded(text)
     }
   }
 
@@ -10614,12 +10618,8 @@ Item {
     vault: root
     capture: "session"
     environment: root.loginProcessEnv()
-    stdout: VaultCollector {
-      id: loginStdout
-    }
-    stderr: VaultCollector {
-      id: loginStderr
-    }
+    stdout: VaultCollector { id: loginStdout }
+    stderr: VaultCollector { id: loginStderr }
     onExited: function(exitCode) {
       // A scrub started here briefly holds the process; a submit arriving then
       // is dispatched when the scrub exits (else it would need a second click).
@@ -10650,12 +10650,8 @@ Item {
     capture: "session"
     command: Model.unlockPrewarmCommand()
     environment: root.authEnv("", "", "", "")
-    stdout: VaultCollector {
-      id: unlockStdout
-    }
-    stderr: VaultCollector {
-      id: unlockStderr
-    }
+    stdout: VaultCollector { id: unlockStdout }
+    stderr: VaultCollector { id: unlockStderr }
     onExited: function(exitCode) {
       if (root.finishScrubRun(unlockProc)) {
         if (root.sshAuthSurfaceActive && root.status === "locked") Qt.callLater(root.prepareUnlock)
@@ -10682,12 +10678,8 @@ Item {
     vault: root
     capture: "vault"
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: listStdout
-    }
-    stderr: VaultCollector {
-      id: listStderr
-    }
+    stdout: VaultCollector { id: listStdout }
+    stderr: VaultCollector { id: listStderr }
     onExited: function(exitCode) {
       root.onListProcessExited(exitCode, listStdout.text, listStderr.text)
     }
@@ -10697,9 +10689,7 @@ Item {
     id: listOrgsProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: listOrgsStdout
-    }
+    stdout: VaultCollector { id: listOrgsStdout }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(listOrgsProc)
       if (root.supersededVaultRead("organizations") || scrub) return
@@ -10711,12 +10701,8 @@ Item {
     id: getItemProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: getItemStdout
-    }
-    stderr: VaultCollector {
-      id: getItemStderr
-    }
+    stdout: VaultCollector { id: getItemStdout }
+    stderr: VaultCollector { id: getItemStderr }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(getItemProc)
       if (root.supersededVaultRead("detail") || scrub) return
@@ -10735,9 +10721,7 @@ Item {
     id: getTotpProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: getTotpStdout
-    }
+    stdout: VaultCollector { id: getTotpStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(getTotpProc)) {
         root.continueTotpQueue(true)
@@ -10807,22 +10791,19 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: activeWindowProc
     command: Model.activeWindowCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        if (text && text.trim()) {
-          try {
-            var data = JSON.parse(text)
-            root.handleActiveWindowDetected(data)
-          } catch (e) {
-            root.windowDetectionFailed()
-          }
-        } else {
+    onCollected: function(text) {
+      if (text && text.trim()) {
+        try {
+          var data = JSON.parse(text)
+          root.handleActiveWindowDetected(data)
+        } catch (e) {
           root.windowDetectionFailed()
         }
+      } else {
+        root.windowDetectionFailed()
       }
     }
   }

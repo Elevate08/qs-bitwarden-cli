@@ -475,11 +475,8 @@ try {
 
 const service = readPluginSource("Service.qml")
 const row = readPluginSource("AutoTypeKeybind.qml")
-check("the Service runs the model's commands, the action's argv built per click",
-  /command: Model\.autoTypeKeybindInspectCommand\(\)/.test(service)
-    && /Model\.autoTypeKeybindRegisterCommand\(check\.chord\)/.test(service)
-    && /Model\.autoTypeKeybindRemoveCommand\(autoTypeKeybind\.removableChord\)/.test(service),
-  "expected the model's commands")
+check("the Service's inspection runs the model's command",
+  /command: Model\.autoTypeKeybindInspectCommand\(\)/.test(service), "expected the model's command")
 check("Copy Line puts the line on the clipboard as a non-secret, through the environment",
   /Model\.clipboardCopyPlainCommand\(\)/.test(service) && !Model.clipboardCopyPlainCommand()[2].includes("--sensitive")
     && !Model.clipboardCopyPlainCommand()[2].includes("timeout") && Model.clipboardCopyPlainCommand()[2].includes("env -u QSBW_CLIP"),

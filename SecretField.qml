@@ -3,12 +3,11 @@ import qs.Commons
 import qs.Ui
 
 // A form field for a secret that cannot be changed once it leaks (a card
-// number or security code, an SSN, a passport or licence number, a TOTP
-// seed): masked until its eye is pressed. The item form used plain fields for
-// these, which drew them in the clear, offered their text to input methods
-// (prediction learns it) and copied a selection to the primary selection.
-// LineField masks the glyphs and does not publish a selection; the hints
-// below keep input methods out while revealed too.
+// number or code, an SSN, a passport or licence number, a TOTP seed): masked
+// until its eye is pressed. A plain field draws it in the clear, offers its
+// text to input methods (prediction learns it) and copies a selection to the
+// primary selection. LineField masks the glyphs and publishes no selection;
+// the hints below keep input methods out while revealed too.
 LineField {
   id: field
 

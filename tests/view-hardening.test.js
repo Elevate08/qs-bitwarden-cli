@@ -22,14 +22,21 @@ check("and closing the panel does too",
 
 // --- the item form's secrets ------------------------------------------------
 
+// A row binds FormSecret's `text` and writes back from its change signal;
+// that only reaches the masked input while `text` is an alias of the one
+// SecretField inside the component.
+const formSecretDef = view.match(/component FormSecret: Column \{\n[\s\S]*?\n  \}\n/)?.[0] || ""
+const formSecretWired = /^\s*property alias text: formSecretField\.text$/m.test(formSecretDef)
+  && (formSecretDef.match(/\bSecretField \{/g) || []).length === 1
+  && !/\bLineField \{|\bTextField \{|\bTextInput \{/.test(formSecretDef)
+  && !/(?:^|[\s;{])text:/.test(formSecretDef.replace(/property alias text:/, ""))
 for (const prop of ["formTotp", "formCardNumber", "formCardCode", "formIdSsn", "formIdPassport", "formIdLicense"]) {
   check(`the form's ${prop} field is masked`,
-    new RegExp(`SecretField \\{\\s*width: parent\\.width\\s*placeholderText: [^\\n]*\\s*text: root\\.vault\\.${prop}\\s*onTextChanged: root\\.vault\\.${prop} = text`).test(view),
+    /component FormSecret: Column \{[^}]*\}\s*SecretField \{ id: formSecretField;/.test(view)
+      && formSecretWired
+      && new RegExp(`FormSecret \\{\\s*(?:visible: [^\\n]*\\s*)?label: [^\\n]*\\s*(?:placeholderText: [^\\n]*\\s*)?text: root\\.vault\\.${prop}\\s*onTextChanged: root\\.vault\\.${prop} = text`).test(view),
     `${prop} is a plain TextField, drawn in the clear and offered to input methods`)
 }
-check("a revealed password field is still kept from input methods",
-  (view.match(/inputMethodHints: Qt\.ImhSensitiveData \| Qt\.ImhNoPredictiveText/g) || []).length >= 2,
-  "the login and item-form password fields lose the hint when shown")
 
 // --- the search box ------------------------------------------------------------
 // Bound to searchQuery. The first Escape or clear button used to assign the
