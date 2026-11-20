@@ -6166,6 +6166,21 @@ function sshAgentLoggedOutLine() {
   return agentControlLine("vault_logged_out")
 }
 
+// What becomes of the keys a helper set aside when a key load's read of the
+// vault failed. `alive`: a read of that vault has just succeeded, so its
+// session is still there and they are served again; otherwise the retry
+// failed too and they are dropped. Only for a helper that says it knows the
+// lines (sshAgentSetsKeysAside()); one from before would end on them.
+function sshAgentKeysAsideLine(alive) {
+  return agentControlLine(alive ? "keys_resume" : "keys_drop")
+}
+
+// Whether the helper behind this `ready` sets its keys aside on a failed
+// `key_load_end` (an older one drops them) and takes the lines above.
+function sshAgentSetsKeysAside(features) {
+  return Array.isArray(features) && features.indexOf("keys-aside") >= 0
+}
+
 // UWSM reads env.d fragments at login. The plugin owns one file, recognised by
 // its exact contents, never by name alone.
 var UWSM_FRAGMENT_REL = ".config/uwsm/env.d/50-qs-bitwarden-ssh-agent"
@@ -7664,6 +7679,7 @@ function sshAgentInitialState() {
     socketPath: "",
     fifoPath: "",
     agentVersion: "",
+    features: [],
     failures: 0,
     readyAtMs: 0,
     errorCode: "",
@@ -7680,6 +7696,7 @@ function sshAgentCopyState(state) {
   return {
     phase: src.phase, gateOpen: src.gateOpen,
     socketPath: src.socketPath, fifoPath: src.fifoPath, agentVersion: src.agentVersion,
+    features: src.features || [],
     failures: src.failures, readyAtMs: src.readyAtMs,
     errorCode: src.errorCode, errorMessage: src.errorMessage
   }
@@ -7725,6 +7742,7 @@ function sshAgentFailOnExit(state, next, action, nowMs) {
   next.socketPath = ""
   next.fifoPath = ""
   next.agentVersion = ""
+  next.features = []
   if (!next.errorCode) {
     next.errorCode = "EXITED"
     next.errorMessage = sshAgentErrorMessage("EXITED")
@@ -7813,6 +7831,8 @@ function sshAgentReduce(state, event) {
         next.socketPath = parsed.message.socketPath
         next.fifoPath = parsed.message.fifoPath
         next.agentVersion = parsed.message.agentVersion
+        // Absent from a helper that has none to list.
+        next.features = Array.isArray(parsed.message.features) ? parsed.message.features : []
         next.readyAtMs = nowMs
         // `failures` is not reset here: only a run that lasts
         // SSH_AGENT_HEALTHY_MS clears it, at exit.
@@ -7832,6 +7852,7 @@ function sshAgentReduce(state, event) {
         next.socketPath = ""
         next.fifoPath = ""
         next.agentVersion = ""
+        next.features = []
         next.phase = "elsewhere"
         next.errorCode = "ELSEWHERE"
         next.errorMessage = sshAgentErrorMessage("ELSEWHERE")

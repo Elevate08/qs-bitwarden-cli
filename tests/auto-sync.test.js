@@ -288,7 +288,7 @@ for (const code of [0, 1]) {
     sendPayloadJson: "", statusCheckAuthoritative: true, listAgentBranchActive: false, listRetriedWithoutAgent: false,
     metadataForceRefresh: false, accountId: "", userEmail: "", loginEmail: "", focused: 0, cleared: 0 })
   for (const name of ["restartStaleStatusProbe", "cancelAuthPrewarm", "followVaultClosedInSshAgent", "endSshAgentLoad",
-    "noteActiveAccount", "maybeMigrateLegacyFingerprint"]) s[name] = () => {}
+    "settleSshAgentKeysAside", "noteActiveAccount", "maybeMigrateLegacyFingerprint"]) s[name] = () => {}
   s.finishScrubRun = () => false
   s.requestSessionCredentialClear = () => { s.cleared++ }
   s.focusAppropriateField = () => { s.focused++ }

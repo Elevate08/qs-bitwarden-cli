@@ -386,6 +386,19 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
   eq("the notification shown for it is still its own, so its Deny is not dropped", v.sshNotifyRequestId, 21)
   eq("the other request stays queued", v.sshPromptQueue.length, 1)
 
+  // A helper that names the request (`promotedFrom`) is taken at its word:
+  // a twin that looks the same is another request, and the card's own is
+  // adopted whatever it looks like, its notification with it.
+  {
+    const named = makeVault({ requestId: 1, raw: a })
+    named.sshPromotedAmbiguous = true
+    named.onSshAgentMessage(Object.assign(approvalOf(20, a), { promotedFrom: 2 }))
+    named.onSshAgentMessage(Object.assign(approvalOf(21, b), { promotedFrom: 1 }))
+    eq("a named release is adopted by the id it names, and nothing else is",
+      [named.sshPrompt.requestId, named.sshNotifyRequestId, named.sshPromptQueue.map(m => m.requestId).join()].join(),
+      "21,21,20")
+  }
+
   // Two held requests that look the same; the card is promoted from one. The
   // approval that arrives may be the other's: the notification is nobody's.
   {

@@ -24,7 +24,7 @@ const functions = ["beginEpochOperation", "invalidateEpochOperation", "beginVaul
   "settleOwedListRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem", "leaveProvisionalDetail",
   "onDeleteItemFinished", "reconcileOpenDetail", "totpWanted",
   "isFieldRevealed", "itemChangeRunning", "commitStagedList", "commitAnswered", "discardStagedList", "listReadFailed",
-  "queueAttachment", "pumpAttachmentQueue", "onAttachmentDownloaded", "cancelAttachmentDownloads"]
+  "queueAttachment", "pumpAttachmentQueue", "onAttachmentDownloaded", "cancelAttachmentDownloads", "settleSshAgentKeysAside"]
 
 // VaultProcess, as far as starting goes: a change of `running` to true starts
 // a run only when none is held (runId 0); to false it asks for a kill, and
@@ -90,7 +90,7 @@ function fixture() {
     attachmentQueue: [], attachmentSaved: {}, attachmentBusyId: "", attachmentBusyName: "", resetAutoLockTimer() {},
     currentScreen: "main", repromptVerifiedId: "",
     flashes: [], derived: 0,
-    bwEnv: () => ({}), endSshAgentLoad() {}, maybeStartupLoad() {}, deferredMetadataTimer: { restart() {} },
+    bwEnv: () => ({}), endSshAgentLoad() {}, sshAgentSetsKeysAside: false, sshAgentWrite() {}, maybeStartupLoad() {}, deferredMetadataTimer: { restart() {} },
     refreshDerivedFromItems() { c.derived++ }, flashNotification: m => c.flashes.push(m),
     closeFilterGroup() {}, clearRepromptGrant() {}, learnFromPick() {}, fetchTotp() {},
     itemPayloadJson: "", failedSave: null, screenBeforeSshApproval: "main", forgotten: [],
@@ -799,6 +799,42 @@ const finishSave = (c, code, out) => {
   c.exit("attachmentProc", 0, "/dl/c.txt", "")
   eq("a download asked for behind a lock's scrub starts when the scrub ends, and each answer is its own",
     [c.attachmentSaved["att-b"], held, started, c.attachmentSaved["att-c"]].join(), "/dl/b.txt,3,4,/dl/c.txt")
+}
+
+// --- keys the SSH helper set aside at a failed key load -------------------------------
+{
+  // A read with the agent branch fails; its retry without the branch reads
+  // the vault, so the session is still there and a helper that lists
+  // `keys-aside` in its `ready` is told to serve its keys again. When the
+  // retry fails too it is told to drop them. A read of a vault since left
+  // resumes nothing, and a helper that lists nothing (or has exited) is
+  // never sent either line.
+  const ready = features => Model.sshAgentReduce(Object.assign(Model.sshAgentInitialState(), { phase: "handshaking" }),
+    { kind: "line", nowMs: 1, line: JSON.stringify(Object.assign({ v: 1, type: "ready", socketPath: "/s", fifoPath: "/f",
+      agentVersion: "0.1.0" }, features ? { features } : {})) + "\n" }).state
+  const sent = state => {
+    const c = fixture()
+    const lines = []
+    Object.assign(c, { sshAgentGateOpen: true, sshAgentNextLoadId: "0123456789abcdef0123456789abcdef",
+      sshAgentProc: { stdinEnabled: true, write() {} }, sshAgentWrite: line => lines.push(JSON.parse(line).type),
+      sshAgentSetsKeysAside: state.gateOpen && Model.sshAgentSetsKeysAside(state.features) })
+    c.loadItems(false)
+    c.exit("listProc", 1, "", "")
+    const afterFailure = lines.length
+    c.exit("listProc", 0, vaultOf("kept"), "")
+    c.loadItems(false)
+    c.reopenAs("session-b")
+    c.exit("listProc", 0, vaultOf("left"), "")
+    c.sshAgentNextLoadId = "fedcba9876543210fedcba9876543210"
+    c.loadItems(false)
+    c.exit("listProc", 1, "", "")
+    c.exit("listProc", 1, "", "")
+    return [afterFailure].concat(lines).join()
+  }
+  const live = ready(["keys-aside"])
+  eq("the read after a failed key load settles the keys set aside: served again if it read the open vault, dropped if it failed too",
+    [sent(live), sent(ready(null)), sent(Model.sshAgentReduce(live, { kind: "exited", exitCode: 1, nowMs: 2 }).state)].join(" "),
+    "0,keys_resume,keys_drop 0 0")
 }
 
 for (const id of ["listOrgsProc", "listFoldersProc", "orgCollectionsProc", "listSendsProc", "getItemProc"]) {
