@@ -624,7 +624,8 @@ Item {
     env[Model.keyringSecretEnvVar()] = pw
     queueEnvelopeJob({
       command: Model.unlockEnvelopeCheckCommand(envelopeTool(), envelopeAccount()),
-      env: env,
+      env: env, verify: true,
+      onRefused: function() { done(false) },
       onDone: function(code) {
         if (code === 0) { done(true); return }
         root.verifyWithBw(pw, function(ok) { done(ok) })
@@ -1802,8 +1803,8 @@ Item {
     envelopeProc.environment = {}
     // The output was the master password: scrub the collector.
     if (job && job.secretOutput) clearProcessCollectorSoon(envelopeProc)
-    var accepting = job && !logoutPending && job.slot === activeSlot
-      && (!job.unlock || (!job.cancelled && job.epoch === vaultEpoch))
+    var accepting = job && !logoutPending && job.slot === activeSlot && !job.cancelled
+      && (!job.unlock || job.epoch === vaultEpoch)
     if (job && job.onDone && (accepting || job.alwaysDone)) job.onDone(exitCode, out)
     else {
       if (job && job.holdOutput) forgetHeldPassword(out)
@@ -1816,18 +1817,23 @@ Item {
     Qt.callLater(pumpEnvelopeJobs)
   }
 
-  // A lock cancels only authentication opens. Setup, re-seal and purge writes
-  // keep their place in the single-writer queue.
+  // A lock cancels only authentication opens and master password checks
+  // (`verify`: the typed password is in their environment, and what they
+  // would allow is in the vault being closed). Setup, re-seal and purge
+  // writes keep their place in the single-writer queue.
   function cancelEnvelopeUnlockJobs() {
     envelopeJobs = envelopeJobs.filter(function(job) {
-      if (!job.unlock) return true
+      if (!job.unlock && !job.verify) return true
       for (var key in job.env) root.forgetHeldPassword(job.env[key])
       job.env = null
+      if (job.verify) root.refuseVerifyJob(job)
       return false
     })
-    if (envelopeJob && envelopeJob.unlock) {
+    if (envelopeJob && (envelopeJob.unlock || envelopeJob.verify)) {
       envelopeJob.cancelled = true
+      if (envelopeJob.verify) refuseVerifyJob(envelopeJob)
       envelopeProc.running = false
+      envelopeProc.environment = {}
       // A run waiting for a helper has no id and will never send an exit.
       if (envelopeProc.runId === 0) {
         vaultKill(envelopeProc)
@@ -1841,6 +1847,16 @@ Item {
     // A status held back for a queued job, or one that never started, has no
     // exit to trigger the recheck. A running job's exit still does it.
     if (!(envelopeJob && envelopeJob.unlock)) recheckStatusAfterUnlock()
+  }
+
+  // A cancelled password check answers its caller "no", once: after the lock
+  // that cancelled it has gone through, so the caller finds the vault closed
+  // and does not take the answer for a wrong password. Its exit, if it was
+  // running, is then nobody's (onEnvelopeJobExited()).
+  function refuseVerifyJob(job) {
+    var refused = job.onRefused
+    job.onRefused = null
+    if (refused) Qt.callLater(refused)
   }
 
   // Leaving an account or logging out invalidates its cleanup callbacks.
@@ -2095,12 +2111,16 @@ Item {
   // No envelope: `bw` checks the password. The session key it mints replaces
   // the current one and is adopted like an unlock's.
   function verifyWithBw(password, done) {
+    // Closed already: `bw` is not given the password, and the answer would
+    // be refused below anyway.
+    if (status !== "unlocked" || logoutPending) { done(false); return }
     var env = {}
     env[Model.keyringSecretEnvVar()] = String(password || "")
     beginEpochOperation("bwVerify")
     queueEnvelopeJob({
       command: Model.bwVerifyPasswordCommand(),
-      env: bwSecretEnv(env), secretOutput: true, capture: "session",
+      env: bwSecretEnv(env), secretOutput: true, capture: "session", verify: true,
+      onRefused: function() { done(false) },
       onDone: function(code, out) {
         var s = code === 0 ? Model.extractSessionToken(out) : ""
         // Locked or logged out meanwhile: adopting the new session would
@@ -6711,10 +6731,17 @@ Item {
     var out = String(stdoutText || "").trim()
     var err = String(stderrText || "").trim()
 
-    if (exitCode === 0 && out) {
+    // The helper's marker with no key kept behind it: a lock or another
+    // forget overtook this run, and the helper let its key go. Nothing is
+    // unlocked, and the password was not refused. (Without the helper the
+    // output is the key itself, never the marker.)
+    var keyDropped = exitCode === 0 && Model.extractSessionToken(out) === Model.vaultHeldSession()
+      && !unlockProc.sessionHeld
+
+    if (exitCode === 0 && out && !keyDropped) {
       fingerprintFromEnvelope = false
       onUnlockSuccess(out)
-    } else if (exitCode === 0 && !err) {
+    } else if (keyDropped || (exitCode === 0 && !err)) {
       // `bw` exits 0 with nothing at all when it never got a password (it
       // falls back to a prompt it cannot show): not a wrong one.
       pinentryMasterName = ""
@@ -6726,7 +6753,8 @@ Item {
       fingerprintFromEnvelope = false
       pinFromEnvelope = false
       fidoFromEnvelope = false
-      errorMessage = "Could not deliver the password to Bitwarden. Please try again."
+      errorMessage = keyDropped ? "Unlock was interrupted. Try again."
+        : "Could not deliver the password to Bitwarden. Please try again."
       Qt.callLater(prepareUnlock)
     } else {
       // A master password typed into pinentry that `bw` refused: forgotten,

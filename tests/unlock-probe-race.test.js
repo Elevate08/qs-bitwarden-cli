@@ -186,6 +186,30 @@ for (const how of ["queued", "running"]) {
   check("a real refusal keeps its own message", /not your master password/.test(v.errorMessage), v.errorMessage)
 }
 
+// --- the helper's marker with no key behind it is not an unlock --------------
+{
+  const outcome = (out, held) => {
+    const v = vault({
+      errorMessage: "", pendingUnlockPassword: "", pendingUnlockFrom: "pin", pinAttempts: 0, pinsCleared: 0,
+      pinFromEnvelope: false, fingerprintFromEnvelope: false, fidoFromEnvelope: false,
+      pinentryMasterName: "", pendingPinForMigration: "", prepared: 0, unlockProc: { sessionHeld: held },
+      clearPin: () => { v.pinsCleared++ }, focusAppropriateField() {},
+      prepareUnlock: () => { v.prepared++ }, onUnlockSuccess() { this.success = true }
+    })
+    bind(v, ["onUnlockOutput"])
+    v.onUnlockOutput(out, "", 0)
+    return v
+  }
+  // A lock or forget overtook the run: the helper let the key go.
+  const dropped = outcome(Model.vaultHeldSession(), false)
+  check("an unlock the helper kept no key for is interrupted, not a success or a refusal, and can be tried again at once; "
+      + "one it kept, and a key printed with no helper, unlock as before",
+    dropped.success === undefined && dropped.status === "locked" && dropped.errorMessage === "Unlock was interrupted. Try again."
+      && dropped.prepared === 1 && dropped.pinsCleared === 0 && dropped.pinAttempts === 0 && dropped.pinUnlockError === ""
+      && outcome(Model.vaultHeldSession(), true).success === true
+      && outcome("A".repeat(88), false).success === true, dropped.errorMessage)
+}
+
 // --- the FIFO writer refuses an absent password ------------------------------
 {
   const cmd = Model.authPasswordWriteCommand("unlock")

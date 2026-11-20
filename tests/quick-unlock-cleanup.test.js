@@ -240,6 +240,32 @@ for (const order of ["running PIN job exits first", "queued PIN job dropped last
   eq(`${order}: fingerprint authorization cleared`, v.fingerprintAuthorized, false)
   eq(`${order}: held status recheck ran`, v.statusChecks, 1)
 }
+// A master password check (a re-prompt's) waiting or running at a lock: its
+// password goes, its caller is told no, once, and its exit is nobody's.
+{
+  const cancelled = stage => {
+    const v = vault()
+    Object.assign(v, { status: "unlocked", forgets: 0, bwSecretEnv: env => env, beginEpochOperation() {},
+      epochOperationIsStale: () => false, storeCurrentSession() {}, forgetVault() { this.forgets++ } })
+    bind(v, service, ["verifyWithBw", "refuseVerifyJob"])
+    if (stage === "queued") v.envelopeProc.running = true // An unrelated write is in flight.
+    const answers = []
+    v.verifyWithBw("typed-master", ok => answers.push(ok))
+    const job = stage === "queued" ? v.envelopeJobs[0] : v.envelopeJob
+    v.dropVaultState()
+    v.status = "locked"
+    const stopped = stage === "queued" || v.envelopeProc.running === false
+    if (stage === "running") {
+      v.envelopeStdout.text = "A".repeat(88)
+      v.onEnvelopeJobExited(0)
+    }
+    return stopped && answers.join() === "false" && v.envelopeJobs.length === 0 && job.env === null
+      && !JSON.stringify(v.envelopeProc.environment || {}).includes("typed-master")
+      // The lock's own forget, and none after it from the late exit.
+      && v.forgets === 1 && v.session === ""
+  }
+  check("a lock cancels a master password check, queued or running", cancelled("queued") && cancelled("running"))
+}
 for (const invalidate of ["lock", "account switch", "epoch change"]) {
   const v = vault()
   v.envelopeProc.running = true // An unrelated write is in flight.
