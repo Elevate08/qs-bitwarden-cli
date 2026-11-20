@@ -23,7 +23,7 @@ const functions = ["beginEpochOperation", "invalidateEpochOperation", "beginVaul
   "openDetail", "onDetailFinished", "itemNeedsReprompt", "dropVaultState", "listSnapshotOutdated",
   "settleOwedListRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem", "leaveProvisionalDetail",
   "onDeleteItemFinished", "reconcileOpenDetail", "totpWanted",
-  "isFieldRevealed", "itemChangeRunning", "commitStagedList", "discardStagedList", "listReadFailed",
+  "isFieldRevealed", "itemChangeRunning", "commitStagedList", "commitAnswered", "discardStagedList", "listReadFailed",
   "queueAttachment", "pumpAttachmentQueue", "onAttachmentDownloaded", "cancelAttachmentDownloads"]
 
 // VaultProcess, as far as starting goes: a change of `running` to true starts
@@ -72,7 +72,7 @@ function fixture() {
   const c = {
     Model, runs, console,
     session: "session-a", status: "unlocked", vaultEpoch: 1, readEpochs: {}, queuedReads: {},
-    vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, listCommitRetried: false, createdItemHandoff: null,
+    vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, listCommitRetried: false, listCommitText: "", createdItemHandoff: null,
     pendingSave: null, pendingDelete: null, recheckArmedAutoType() {}, recheckTotpFollowup() {}, sshTotalPendingCount: 0,
     vaultHelperActive: true, dependencies: deps,
     items: [], filteredItems: [], organizations: [], folders: [], sends: [], sendIndex: 0,
@@ -611,10 +611,16 @@ const finishSave = (c, code, out) => {
   d.exit("listProc", 0, vaultOf("shared"), "", () => d.onDeleteItemFinished(0, "", ""))
   check("a delete left over from the vault before tells the helper nothing: the row shown is one it holds",
     d.forgotten.length === 0 && d.helper.held.join() === "id-shared" && names(d) === "shared", JSON.stringify(d.helper) + names(d))
-  Object.assign(u.listProc, { staged: 7, committing: 7 }); u.listCommitRetried = true
+  u.helper.defer = true
+  u.loadItems(false); u.exit("listProc", 0, vaultOf("late"), "")       // its commit's answer is on the way
+  const awaited = u.listCommitText !== ""
+  u.listProc.staged = 7; u.listCommitRetried = true
   u.dropVaultState()
-  check("a lock drops the staged read's id, the commit awaited and its retry",
-    u.listProc.staged === 0 && !u.listProc.committing && !u.listCommitRetried)
+  const dropped2 = u.listProc.staged === 0 && !u.listProc.committing && !u.listCommitRetried && u.listCommitText === ""
+  u.session = "session-a"; u.status = "unlocked"; u.vaultEpoch -= 1    // even were the answer taken for this vault's
+  u.helper.answer()
+  check("a lock drops the staged read's id, the commit awaited with its list, and its retry: a late answer shows nothing",
+    awaited && dropped2 && names(u) === "", JSON.stringify({ awaited, dropped2, now: names(u) }))
   // Another session is handed over (a terminal sign-in) while the helper's
   // answer is on the way: its read waits for that answer, which is for a
   // vault no longer open.

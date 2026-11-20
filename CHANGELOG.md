@@ -426,7 +426,8 @@
   removal that could not delete a file no longer counts as one that
   succeeded. The messages say "the public key directory" and no longer
   name `~/.local/share/qs-bitwarden-cli/ssh`, which is not where it is
-  when `XDG_DATA_HOME` is set.
+  when `XDG_DATA_HOME` is set to another directory (empty, or
+  `$HOME/.local/share`, it is the same one).
 - **Deny on the notification of a request that was waiting for an unlock.**
   A signing request that arrived while the vault was locked is shown on the
   card as soon as the vault opens and is given its final number when its
