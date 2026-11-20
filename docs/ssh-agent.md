@@ -127,6 +127,8 @@ omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
 
 #### Known limits
 
+- When a list read's key batch failed and the read that replaces it fails as well, the agent has no keys until the next list read (a refresh, a sync or a save) succeeds.
+- A signing request that arrives in the instant the last approval is answered can be failed by the key load that follows it, and has to be run again.
 - A signing request that waited for an unlock is given a new number by the helper once the vault opens; a **Deny** pressed in the instant between the helper retiring the old number and the panel learning the new one is lost, and the request stays on the card to be denied again.
 
 #### Turning it off

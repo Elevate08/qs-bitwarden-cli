@@ -173,8 +173,10 @@ check("a lock drops the helper's key and items",
 check("each queued lock keeps its own copy of the key until it has run",
   /holdSession\(name\)/.test(body("requestBwLock")) && /"secret:" \+ run\.key/.test(body("runBwLockStep"))
     && /forgetVaultSecret\(lockRun\.key\)/.test(body("finishBwLock")), body("requestBwLock"))
-check("a deleted item is dropped from the helper once the delete succeeded, even if the panel moved on",
-  /exitCode === 0 && removal\) forgetVaultItem\(removal\.id\)[\s\S]*?vaultReadIsStale\("itemDelete"\)/.test(body("onDeleteItemFinished"))
+// For this vault, whatever list the panel has read since; a delete left over
+// from a vault since closed is not sent on (tests/list-races.test.js runs it).
+check("a deleted item is dropped from the helper once the delete succeeded, unless its vault has since closed",
+  /vaultReadIsStale\("itemDelete"\)\) return[\s\S]{0,300}?exitCode === 0 && removal\) forgetVaultItem\(removal\.id\)\s*settleOwedListRead\(\)/.test(body("onDeleteItemFinished"))
     && /vaultHelperLine\("forgetItem", \{ id: id \}\)/.test(body("forgetVaultItem")), body("onDeleteItemFinished"))
 check("quick unlock's master password stays in the helper",
   /holdOutput: true/.test(body("submitPinUnlock")) && /holdOutput: true/.test(body("openEnvelopeForFingerprint"))
@@ -283,6 +285,40 @@ if (!fs.existsSync(binary)) {
   const inspection = require("child_process").execFileSync(...(c => [c[0], c.slice(1)])(Model.vaultHelperInspectCommand(repoRoot))).toString()
   const parsed = Model.parseVaultHelperInspection(inspection)
   eq("the panel's inspection accepts the built helper", parsed.state + "/" + parsed.protocol, "ok/1")
+  {
+    // Whether a helper stages list reads is what its own --version says, seen
+    // by the same inspection, and holds for the process started from that
+    // inspection only: one restarted after it stopped may be another
+    // executable and is asked the old way, as is one that does not say so
+    // (the one in bin/ until it is rebuilt).
+    const os = require("os")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-stage-"))
+    fs.mkdirSync(path.join(root, "vault/target/debug"), { recursive: true })
+    fs.symlinkSync(binary, path.join(root, "vault/target/debug/qs-bitwarden-vault"))
+    const built = require("child_process").execFileSync(...(c => [c[0], c.slice(1)])(Model.vaultHelperInspectCommand(root))).toString()
+    fs.rmSync(root, { recursive: true, force: true })
+    const written = []
+    const v = { Model, console: { warn() {} }, Qt: { callLater() {} }, vaultHelperState: "active", vaultHelperActive: true,
+      vaultHelperStaging: false, vaultHelper: null, vaultRunSeq: 0, vaultRuns: {}, vaultQueries: {}, vaultWaiting: [],
+      vaultHelperRestarts: 0, vaultHelperMaxRestarts: 3, vaultHelperReadyTimedOut: false, shuttingDown: false, session: "",
+      heldSessionMarker: "held", vaultHelperReadyTimer: { stop() {} }, vaultHelperSettleTimer: { stop() {} },
+      bwEnvAtStart() {}, startVaultHelper() {}, useVaultFallback() {},
+      vaultHelperProc: { running: true, write: line => written.push(JSON.parse(line)) } }
+    const names = ["vaultStart", "onVaultHelperInspected", "onVaultHelperExited"]
+    Object.assign(v, new Function("scope", "with (scope) {\n" + names.map(body).join("\n") + "\nreturn { " + names.join(", ") + " } }")(v))
+    const capture = () => {
+      v.vaultHelperState = "active"
+      v.vaultStart({ capture: "vault", session: true, inject: {}, environment: {}, command: ["bw"], stdinText: "", started() {}, finish() {} })
+      return written.pop().capture
+    }
+    v.onVaultHelperInspected(built)
+    const inspected = capture()
+    v.onVaultHelperExited(1)
+    const restarted = capture()
+    v.onVaultHelperInspected(built.replace("capability=1\n", ""))
+    eq("a list read is staged only by a helper whose own inspection said it stages: not one restarted since, nor one that does not say so",
+      [inspected, restarted, capture()].join(), "vaultStage,vault,vault")
+  }
 
   const child = spawn(binary, [], { stdio: ["pipe", "pipe", "inherit"] })
   let buffer = ""
@@ -374,6 +410,28 @@ if (!fs.existsSync(binary)) {
     check("a forgotten item is no longer served by the helper", (await reply(m => m.q === 201)).ok === false, "")
     send(Model.vaultHelperLine("search", { q: 202, query: "Recovery" }))
     eq("nor found by its search", JSON.stringify((await reply(m => m.q === 202)).value), "[]")
+
+    // A staged list read: answered from only once its own id is committed.
+    const edited = code => JSON.stringify({ items: [{ id: "k", type: 3, name: "Card", card: { code } }], sshKeys: [] })
+    const cardCode = async () => (await field("field", "k", "cardCode")).value
+    const commit = async stage => {
+      n += 1
+      send(Model.vaultHelperLine("commitVault", { q: n, stage }))
+      return (await reply(m => m.q === n)).ok
+    }
+    send(Model.vaultExecLine(4, ["sh", "-c", "cat"], {}, {}, "vaultStage", edited("111")))
+    const first = await reply(m => m.type === "exit" && m.id === 4)
+    const unanswered = first.staged > 0 && !/111/.test(first.out) && await cardCode() === "987"
+    send(Model.vaultExecLine(5, ["sh", "-c", "cat"], {}, {}, "vaultStage", edited("222")))
+    const second = await reply(m => m.type === "exit" && m.id === 5)
+    const replaced = await commit(first.staged) === false && await cardCode() === "987"
+    const committed = await commit(second.staged) === true && await cardCode() === "222" && await commit(second.staged) === false
+    send(Model.vaultExecLine(6, ["sh", "-c", "cat"], {}, {}, "vaultStage", edited("333")))
+    const third = await reply(m => m.type === "exit" && m.id === 6)
+    send(Model.vaultHelperLine("discardVault", { stage: third.staged }))
+    const discarded = await commit(third.staged) === false && await cardCode() === "222"
+    check("the helper answers from a staged read only once its own id is committed: not before, not a replaced or discarded one",
+      unanswered && replaced && committed && discarded, JSON.stringify({ unanswered, replaced, committed, discarded }))
 
     child.stdin.end()
     child.on("exit", () => done())

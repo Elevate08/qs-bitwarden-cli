@@ -17,7 +17,8 @@ Item {
   property bool running: false
   property VaultCollector stdout: null
   property VaultCollector stderr: null
-  // "plain" | "session" | "vault" | "vaultMerge" | "secret:<name>" |
+  // "plain" | "session" | "vault" (staged by a helper that can, see `staged`)
+  // | "vaultMerge" | "secret:<name>" |
   // "pinentry:<name>" (the answer of Model.pinentryCommand(), held decoded)
   property string capture: "plain"
   // Add BW_SESSION.
@@ -30,6 +31,13 @@ Item {
   property bool sessionHeld: false
   // Whether a `secret:<name>` capture kept the output.
   property bool outputHeld: false
+  // The id the helper staged this run's list under, 0 if it staged none:
+  // for vault.commitStagedList() or discardStagedList(). An id, no vault data.
+  property int staged: 0
+  // The staged id the helper has been asked to take and has not answered
+  // for, 0 if none: the list is not read again until it has
+  // (vault.commitStagedList()).
+  property int committing: 0
 
   signal started()
   signal exited(int exitCode, int exitStatus)
@@ -50,6 +58,7 @@ Item {
     startSeq += 1
     sessionHeld = false
     outputHeld = false
+    staged = 0
     // A lock's scrub (Model.scrubCommand()): here it is only clearing text.
     if (Model.isScrubCommand(command)) {
       if (stdout) stdout.text = ""

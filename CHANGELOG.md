@@ -245,6 +245,24 @@
   sends is decoded by whichever image plugin Qt has installed claims it.
   The setting's text now says so, and nothing is fetched until you turn it
   on.
+- **A list the panel refuses is no longer what the vault helper answers
+  from.** The helper took each list read as its items the moment `bw` printed
+  it, before the panel decided whether to show it. When the panel refused one
+  (it was started before a save, delete or sync finished, or a newer read
+  replaced it) and the read that should have replaced it failed or could not
+  start, the helper went on serving the refused one: an edited item's old
+  password could be copied, revealed or typed. A list read is now set aside in
+  the helper, one at a time and under an id, and becomes its items only when
+  the panel accepts that list, which it shows once the helper has taken it
+  (and then always, reading it again if a save or delete finished
+  meanwhile); a refused or replaced one is dropped and wiped, as it is by a
+  save that finishes meanwhile and by a lock, logout or account switch. What the helper
+  serves (searches, reveals, copies, auto-type, its TOTP codes) comes only
+  from the last list both sides accepted; the panel can still copy a TOTP
+  code it already holds, or get one from `bw get totp`. This needs the
+  rebuilt vault helper (it says `staged-lists` in `--version`); with one from
+  before it, or one restarted after it stopped and not checked again, the
+  panel asks the old way and behaves as it did.
 
 ### Changed
 

@@ -69,7 +69,8 @@ check("the vault list is parsed once per load",
     && !/inspectSanitizedVault|parseSanitizedItems/.test(listFinished),
   listFinished)
 
-const listExited = bodyOf("onListProcessExited")
+// The failure a read ends with is settled in listReadFailed().
+const listExited = bodyOf("onListProcessExited") + "\n" + bodyOf("listReadFailed")
 check("item output is accepted only after the process exit status is known",
   /exitCode\s*===\s*0/.test(listExited) && /onListFinished\(/.test(listExited), listExited)
 check("a failed item refresh clears all loading and deferred-work state",
