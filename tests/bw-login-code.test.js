@@ -14,7 +14,7 @@ const { createSuite, loadModule, read, repoRoot } = require("./harness")
 const Model = loadModule()
 const { check, done } = createSuite("bw-login-code")
 
-const FLAG = Model.twoFactorCodeFlag()
+const FLAG = Model.TWOFACTOR_CODE_FLAG
 const ENV = Model.twoFactorCodeEnvVar()
 const CODE = "249213"
 

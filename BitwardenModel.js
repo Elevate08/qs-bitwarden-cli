@@ -39,11 +39,6 @@ function keyringAttributes(account) {
   return " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(account)
 }
 
-function keyringStoreScript(label, account) {
-  return "printf '%s' \"$" + KEYRING_SECRET_ENV + "\" | secret-tool store --label=" + shellQuote(label)
-    + keyringAttributes(account)
-}
-
 // A capped `secret-tool lookup` of one entry.
 function keyringReadScript(account) {
   return "secret-tool lookup" + keyringAttributes(account) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES
@@ -591,10 +586,6 @@ function clientSecretEnvVar() {
 
 function twoFactorCodeEnvVar() {
   return TWOFACTOR_CODE_ENV
-}
-
-function twoFactorCodeFlag() {
-  return TWOFACTOR_CODE_FLAG
 }
 
 function noInteractionEnvVar() {
@@ -7076,14 +7067,7 @@ function textOf(value) {
 }
 
 // `value` as text, with each invisible character written out so the prompt
-// shows it. The whole text: for display, use the bounded forms below.
-function visibleText(value) {
-  var out = ""
-  eachVisiblePiece(textOf(value), 0, function(piece) { out += piece })
-  return out
-}
-
-// Escaped and cut in one pass, so the limit bounds what is drawn (in UTF-16
+// shows it. Escaped and cut in one pass, so the limit bounds what is drawn (in UTF-16
 // code units of the escaped text) and the cut falls between pieces. The scan
 // stops at the first piece that does not fit.
 function boundedText(value, limit) {
@@ -7280,7 +7264,7 @@ var SSH_AGENT_NOTIFY_DELAY_MS = 8000
 function sshAgentNotifyDelayMs() { return SSH_AGENT_NOTIFY_DELAY_MS }
 
 // Notification bodies are markup on most daemons; the text is already stripped
-// of invisible characters (visibleText), so only the markup characters remain.
+// of invisible characters (boundedText), so only the markup characters remain.
 function notifyEscape(text) {
   return String(text === undefined || text === null ? "" : text)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")

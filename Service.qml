@@ -960,7 +960,6 @@ Item {
   property int associationsEpoch: 0
   property int associationsReadEpoch: -1
   property bool sessionStorePending: false
-  property bool sessionClearPending: false
   // Which account's session the running store writes, and the accounts
   // whose session clears wait behind a running one: a switch can land
   // between a request and its run.
@@ -4769,10 +4768,8 @@ Item {
     var target = Model.isAccountSlot(slot) ? slot : activeSlot
     if (keyringClearProc.running) {
       if (sessionClearSlots.indexOf(target) === -1) sessionClearSlots = sessionClearSlots.concat([target])
-      sessionClearPending = true
       return
     }
-    sessionClearPending = false
     sessionClearRun = { slot: target, attempt: attempt || 1 }
     keyringClearProc.command = Model.keyringClearCommand(target)
     keyringClearProc.running = true
@@ -4885,8 +4882,7 @@ Item {
   // Process environments
   // -------------------------------------------------------------------------
 
-  // Secrets reach processes in the environment or on stdin, never argv
-  // (keyringStoreScript()).
+  // Secrets reach processes in the environment or on stdin, never argv.
 
   // BW_SESSION rather than --session keeps the token out of argv. Every `bw`
   // runs in the active account's data directory (accountAppDataEnv()).
@@ -5041,12 +5037,6 @@ Item {
   function pinEnv(pin) {
     var env = {}
     env[Model.pinEnvVar()] = String(pin || "")
-    return env
-  }
-
-  function secretEnv(value) {
-    var env = {}
-    env[Model.keyringSecretEnvVar()] = String(value || "")
     return env
   }
 
