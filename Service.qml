@@ -791,6 +791,10 @@ Item {
   // Over when a list is shown, and when a read is asked for by anything else
   // (loadItems()).
   property bool listCommitRetried: false
+  // The list read whose commit the helper has been asked for
+  // (listProc.committing), until it answers: vault rows without their
+  // secrets, cleared with them by dropVaultState().
+  property string listCommitText: ""
   // A new item's detail, covered by an SSH approval when its save answered:
   // { from: provisional id, to: saved id }, taken up when the detail is back
   // (resumeCreatedItem()).
@@ -1408,16 +1412,25 @@ Item {
     var epoch = vaultEpoch
     var changes = vaultChanges
     listProc.committing = stage
+    // The list itself waits in listCommitText, not in the answer's closure:
+    // a lock clears it, and a late answer then has nothing to show.
+    listCommitText = rawJson
     vaultQuery("commitVault", { stage: stage }, function(ok) {
       // First, whatever the answer and whatever has happened since (the
       // vault closed, another session handed over, the helper gone): the
       // reader is free again, and a read that waited for this answer runs,
       // unless a later run or commit of the reader's is now what it waits
       // for. A read queued for a vault since closed is only dropped.
-      if (listProc.committing === stage) listProc.committing = 0
+      var held = ""
+      if (listProc.committing === stage) {
+        listProc.committing = 0
+        held = root.listCommitText
+        root.listCommitText = ""
+      }
       var current = epoch === root.vaultEpoch
       var spinner = root.isLoading
-      if (ok && current) root.onListFinished(rawJson)
+      if (ok && current && held !== "") root.onListFinished(held)
+      held = ""
       if (!root.vaultProcBusy(listProc) && root.supersededVaultRead("items")) {
         root.isLoading = spinner
         return
@@ -6979,6 +6992,7 @@ Item {
     // The helper drops what it had staged with the rest (forgetVault()).
     listProc.staged = 0
     listProc.committing = 0
+    listCommitText = ""
     listCommitRetried = false
     createdItemHandoff = null
     masterPassword = ""
