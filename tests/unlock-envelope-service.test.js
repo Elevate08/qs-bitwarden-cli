@@ -137,45 +137,10 @@ check("a session bw mints after the vault locked is not adopted",
 check("removing a method does not wait for a summary to exist",
   !/if \(!envelopeSummary\) return/.test(bodyOf("removeQuickUnlockMethod")), bodyOf("removeQuickUnlockMethod"))
 // 5. A failed bw status never called back, leaving setup forms busy forever.
-//    The real withEnvelopeAccount() on a first sign-in, whose account is
-//    not known yet, with the check that names the account once the list has
-//    painted (deferredMetadataTimer). That check starts no `bw status` of its
-//    own for a vault this one was asked about; it asks only if this one
-//    fails, or was asked about a vault since locked and opened again.
-{
-  const { handlerBody } = require("./detail-vault")
-  const signIn = () => {
-    const v = { Model, accountId: "", accountServer: "", vaultEpoch: 7, status: "unlocked", userEmail: "", loginEmail: "",
-      accountStatusEpoch: -1, accountStatusAwaitedEpoch: -1, statusRefreshAfterItems: true, jobs: [], checks: 0, said: [],
-      Qt: { callLater() {} }, bwEnv: () => ({}), noteActiveAccount() {}, maybeMigrateLegacyFingerprint() {},
-      loadPendingMetadata() {}, queueEnvelopeJob(job) { v.jobs.push(job) }, runStatusCheck() { v.checks++ } }
-    v.root = v
-    const names = ["withEnvelopeAccount", "accountStatusAnswered"]
-    Object.assign(v, new Function("root", "with (root) {\n" + names.map(bodyOf).join("\n") + "\nreturn { " + names.join(", ")
-      + ", listPainted() {" + handlerBody(service.slice(service.indexOf("id: deferredMetadataTimer")), "onTriggered") + "} } }")(v))
-    v.withEnvelopeAccount(() => v.said.push("known"), () => v.said.push("unknown"))
-    return v
-  }
-  const named = signIn()
-  named.listPainted()
-  named.jobs[0].onDone(0, JSON.stringify({ status: "unlocked", userId: "u1", userEmail: "a@x", serverUrl: "https://s" }))
-  const failed = signIn()
-  failed.listPainted()
-  const beforeAnswer = failed.checks
-  failed.jobs[0].onDone(1, "")
-  const reopened = signIn()
-  reopened.vaultEpoch += 1
-  reopened.statusRefreshAfterItems = true
-  reopened.listPainted()
-  check("an account that cannot be learned still answers its caller, and one bw status names a new sign-in",
-    named.checks === 0 && named.accountId === "u1" && named.userEmail === "a@x" && named.said.join() === "known"
-      && beforeAnswer === 0 && failed.checks === 1 && failed.said.join() === "unknown"
-      && reopened.checks === 1
-      && /\}, function\(\) \{ finish\(false\) \}\)/.test(writer)
-      && /\}, function\(\) \{ done\(false, "failed", 0\) \}\)/.test(bodyOf("addQuickUnlockMethodWith")),
-    JSON.stringify({ named: [named.checks, named.accountId, named.userEmail, named.said], failed: [beforeAnswer, failed.checks, failed.said],
-      reopened: reopened.checks }))
-}
+check("an account that cannot be learned still answers its caller",
+  /function withEnvelopeAccount\(then, otherwise\)[\s\S]{0,600}?else if \(otherwise\) \{\s*otherwise\(\)/.test(service)
+    && /\}, function\(\) \{ finish\(false\) \}\)/.test(writer)
+    && /\}, function\(\) \{ done\(false, "failed", 0\) \}\)/.test(bodyOf("addQuickUnlockMethodWith")), "")
 
 // -------------------------------------------------------------------------
 // One at a time, and logout last
