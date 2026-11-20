@@ -4330,8 +4330,11 @@ Item {
     loginProc.running = true
   }
 
+  // `opened` beside the surface it feeds: as the panel opens (onPanelOpened(),
+  // inside onOpenedChanged) that binding has not been evaluated again yet and
+  // still reads false, which left an opened lock screen without its prewarm.
   function prepareUnlock() {
-    if (!sshAuthSurfaceActive || status !== "locked" || unlockProc.running) return
+    if ((!opened && !sshAuthSurfaceActive) || status !== "locked" || unlockProc.running) return
     unlockSubmitted = false
     unlockProc.command = Model.unlockPrewarmCommand()
     unlockProc.running = true

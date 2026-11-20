@@ -323,6 +323,12 @@
 
 ### Fixed
 
+- **Unlocking with a PIN no longer waits for `bw` to start.** The `bw unlock`
+  that waits for the password was meant to start when a locked panel opens,
+  but only started when the master-password field took the focus, which it
+  does not when a PIN is set: every PIN unlock then began with a whole `bw`
+  start (about 0.6 s). It now starts as the panel opens, as before holding
+  no secret and stopped when the panel closes.
 - **An answer given as the vault opens reaches its SSH request.** A request
   held for an unlock gets a new number once the keys are loaded; the helper
   now names the request the new number belongs to and answers to the old one

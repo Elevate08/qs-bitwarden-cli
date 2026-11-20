@@ -5,6 +5,7 @@
 //   node tests/auth-prewarm.test.js
 
 const { createSuite, functionBody, loadModule, readPluginSource } = require("./harness")
+const { handlerBody } = require("./detail-vault")
 const fs = require("fs")
 const os = require("os")
 const path = require("path")
@@ -238,8 +239,37 @@ printf '%s %s' "$parent_stopped" "$child_stopped"
 const panelSrc = readPluginSource("Panel.qml")
 const bodyOf = name => functionBody(panelSrc, name)
 
-check("opening an already-locked panel starts unlock prewarming",
-  /prepareUnlock\(\)/.test(bodyOf("onPanelOpened")), bodyOf("onPanelOpened"))
+// The real open and close, on a locked vault whose PIN field takes the focus
+// (so the password field's own prepareUnlock() never runs). As in the shell,
+// `sshAuthSurfaceActive` still reads false while onOpenedChanged runs for an
+// open, and is current afterwards.
+{
+  const starts = []
+  const proc = () => ({ on: false, get running() { return this.on }, set running(v) { if (v && !this.on) starts.push(this); this.on = v } })
+  const v = {
+    Model, opened: false, sshAuthSurfaceActive: false, pinentryActive: false, status: "locked", sshPrompt: null,
+    secondFactorStartedAt: 0, pinentryAutoAsked: false, unlockProc: proc(), loginProc: proc(), authPasswordWriterProc: proc(),
+    presenter: { focusField() {} }, fidoUnlocker: { releaseSurface() {} },
+    resumeFromPinentry: () => false, pendingSecondFactorLogin: () => false
+  }
+  for (const stub of ["focusAppropriateField", "detectActiveWindowContext", "refreshFingerprintAvailability", "refreshStatus",
+    "armPresenceUnlock", "clearRepromptGrant", "resetPinentryChoice", "cancelFingerprintUnlock", "abandonAuthSecrets"]) v[stub] = () => {}
+  const real = ["panelShown", "onPanelOpened", "prepareUnlock", "cancelAuthPrewarm"]
+  Object.assign(v, new Function("root", "with (root) {\n" + real.map(bodyOf).join("\n")
+    + "\nreturn { " + real.join(", ") + ", openedChanged() {" + handlerBody(panelSrc, "onOpenedChanged") + "} } }")(v))
+  v.opened = true
+  v.openedChanged()
+  const onOpen = starts.length
+  // Asked again once the binding is current: still the one.
+  v.sshAuthSurfaceActive = true
+  v.prepareUnlock()
+  const prewarmed = onOpen === 1 && starts.length === 1 && starts[0] === v.unlockProc && v.unlockProc.running
+  v.opened = false
+  v.openedChanged()
+  check("a locked panel that opens starts one unlock prewarm, and closing it stops that",
+    prewarmed && !v.unlockProc.running && starts.length === 1,
+    `started as it opened: ${onOpen}, in all: ${starts.length}, running after close: ${v.unlockProc.running}`)
+}
 check("submitting unlock writes to the prepared FIFO",
   /writeAuthPassword\("unlock",\s*p\)/.test(bodyOf("unlockVaultWithPassword")), bodyOf("unlockVaultWithPassword"))
 check("closing the panel cancels auth prewarming",
