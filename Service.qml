@@ -2682,6 +2682,27 @@ Item {
     if (sshAgentProc.running && sshAgentProc.stdinEnabled) sshAgentProc.write(line)
   }
 
+  // Which run of the helper this is, and which one raised the cards and
+  // queued prompts now held. A helper numbers its requests itself, so a
+  // number means something only to the run that gave it: an answer goes to
+  // the helper only for a card that run raised (sshAgentDecide()), and when
+  // a helper stops or another is ready, every card is taken down before
+  // anything else is done with it (withdrawSshCards()).
+  property int sshAgentInstance: 0
+  property int sshCardsInstance: -1
+
+  // An Approve, Deny or unlock_cancelled, for a card of the running helper.
+  function sshAgentDecide(line) {
+    if (root.sshCardsInstance !== root.sshAgentInstance) return
+    sshAgentWrite(line)
+  }
+
+  function withdrawSshCards() {
+    root.sshAgentInstance += 1
+    if (root.sshPrompt !== null || root.sshUnlockRequest !== null
+        || root.sshPromptQueue.length > 0 || root.sshUnlockQueue.length > 0) dismissSshApproval()
+  }
+
   // Announce a cooldown that may have just started: it is the only
   // explanation for suddenly failing SSH commands.
   function noteSshCooldown() {
@@ -2763,6 +2784,7 @@ Item {
     root.sshPromptQueue = []
     root.sshPromotedOldId = null
     root.sshPromotedRaw = null
+    root.sshPromotedAmbiguous = false
     root.sshUnlockRequest = null
     root.sshUnlockRaw = null
     root.sshUnlockQueue = []
@@ -2833,7 +2855,7 @@ Item {
     // vault is kept open for. An identity listing (`ssh-add -l`) is neither,
     // and is not counted anywhere: see onSshAgentMessage().
     resetAutoLockTimer()
-    sshAgentWrite(Model.sshAgentApproveLine(sshPrompt.requestId, grantSeconds))
+    sshAgentDecide(Model.sshAgentApproveLine(sshPrompt.requestId, grantSeconds))
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "approved", Date.now())
     noteSshCooldown()
     advanceSshPrompt()
@@ -2841,14 +2863,14 @@ Item {
 
   function denySshRequest() {
     if (sshUnlockRequest) {
-      sshAgentWrite(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
+      sshAgentDecide(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
       root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
       noteSshCooldown()
       advanceSshUnlock()
       return
     }
     if (sshPrompt) {
-      sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
+      sshAgentDecide(Model.sshAgentDenyLine(sshPrompt.requestId))
       root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
       noteSshCooldown()
       advanceSshPrompt()
@@ -2859,19 +2881,19 @@ Item {
 
   function denyAllSshRequests() {
     if (sshPrompt) {
-      sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
+      sshAgentDecide(Model.sshAgentDenyLine(sshPrompt.requestId))
     }
     for (var i = 0; i < root.sshPromptQueue.length; i++) {
       if (root.sshPromptQueue[i] && root.sshPromptQueue[i].requestId) {
-        sshAgentWrite(Model.sshAgentDenyLine(root.sshPromptQueue[i].requestId))
+        sshAgentDecide(Model.sshAgentDenyLine(root.sshPromptQueue[i].requestId))
       }
     }
     if (sshUnlockRequest) {
-      sshAgentWrite(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
+      sshAgentDecide(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
     }
     for (var j = 0; j < root.sshUnlockQueue.length; j++) {
       if (root.sshUnlockQueue[j] && root.sshUnlockQueue[j].requestId) {
-        sshAgentWrite(Model.sshAgentUnlockCancelledLine(root.sshUnlockQueue[j].requestId))
+        sshAgentDecide(Model.sshAgentUnlockCancelledLine(root.sshUnlockQueue[j].requestId))
       }
     }
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
@@ -2987,7 +3009,7 @@ Item {
   // --- Terminal replies ------------------------------------------------------
   function denyCurrentSshPrompt() {
     if (!sshPrompt) return
-    sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
+    sshAgentDecide(Model.sshAgentDenyLine(sshPrompt.requestId))
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
     noteSshCooldown()
     advanceSshPrompt()
@@ -3009,6 +3031,7 @@ Item {
     var allow = decision === "allow"
     if (id < 0 || (!allow && decision !== "deny")) return "invalid"
     if (allow && !root.sshAgentTerminalApproval) return "disabled"
+    id = sshCurrentRequestId(id)
     if (root.sshPrompt && root.sshPrompt.requestId === id) {
       if (allow) approveSshRequest(0)
       else denyCurrentSshPrompt()
@@ -3019,10 +3042,10 @@ Item {
       root.sshPromptQueue = queued
       if (allow) {
         resetAutoLockTimer()
-        sshAgentWrite(Model.sshAgentApproveLine(id, 0))
+        sshAgentDecide(Model.sshAgentApproveLine(id, 0))
         root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "approved", Date.now())
       } else {
-        sshAgentWrite(Model.sshAgentDenyLine(id))
+        sshAgentDecide(Model.sshAgentDenyLine(id))
         root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
       }
       noteSshCooldown()
@@ -3035,7 +3058,7 @@ Item {
       return "unknown"
     }
     if (root.sshUnlockRequest && root.sshUnlockRequest.requestId === id) {
-      sshAgentWrite(Model.sshAgentUnlockCancelledLine(id))
+      sshAgentDecide(Model.sshAgentUnlockCancelledLine(id))
       root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
       noteSshCooldown()
       advanceSshUnlock()
@@ -3044,12 +3067,34 @@ Item {
     var unlockLeft = Model.sshAgentRemovePrompt(root.sshUnlockQueue, id)
     if (unlockLeft.length !== root.sshUnlockQueue.length) {
       root.sshUnlockQueue = unlockLeft
-      sshAgentWrite(Model.sshAgentUnlockCancelledLine(id))
+      sshAgentDecide(Model.sshAgentUnlockCancelledLine(id))
       return "denied"
     }
     return "unknown"
   }
 
+  // The number a request answers to now, given one a terminal read for it
+  // (sshPendingJson()) before it was renumbered: the number its unlock
+  // prompt had is still its own once the card or a queued prompt carries
+  // the new one.
+  function sshCurrentRequestId(id) {
+    var raw = root.sshPromptRaw
+    if (root.sshPrompt && (root.sshPrompt.promotedFrom === id || (raw && raw.promotedFrom === id))) {
+      return root.sshPrompt.requestId
+    }
+    for (var i = 0; i < root.sshPromptQueue.length; i++) {
+      var queued = root.sshPromptQueue[i]
+      if (queued && queued.promotedFrom === id) return queued.requestId
+    }
+    return id
+  }
+
+  // A request held for an unlock comes back, once the keys are loaded, as an
+  // approval_required under a new id. The helper says which request it is
+  // (`promotedFrom`: the id the unlock prompt had), and answers to that id
+  // until then, so the card the promotion put up is the request's own by its
+  // number. The three properties here are for a helper from before that,
+  // which names nothing: adoptSshPrompt() goes by what the request looks like.
   property var sshPromotedOldId: null
   // The unlock_required message the shown prompt was promoted from. An unlock
   // releases every held request in no fixed order, so the first approval_required
@@ -3065,16 +3110,22 @@ Item {
     // Only the card the promotion put up: once that one was answered and
     // another request is shown, an adoption would hand this request's id to
     // the other's card.
-    if (root.sshPromotedOldId !== null && root.sshPrompt
+    var named = typeof message.promotedFrom === "number"
+    var same = named
+      ? message.promotedFrom > 0 && root.sshPrompt && root.sshPrompt.requestId === message.promotedFrom
+      : root.sshPromotedOldId !== null && root.sshPrompt
         && root.sshPrompt.requestId === root.sshPromotedOldId
-        && Model.sshAgentSameRequest(root.sshPromotedRaw, message)) {
+        && Model.sshAgentSameRequest(root.sshPromotedRaw, message)
+    if (same) {
       // A notification already up was shown for this request under its old
       // id: its Deny stays this request's, and no other's. Where this may be
-      // another request that looks the same, the notification is nobody's:
-      // its Deny does nothing, and the card is answered on the card.
+      // another request that looks the same (the helper did not name it),
+      // the notification is nobody's: its Deny does nothing, and the card is
+      // answered on the card.
       if (root.sshNotifyRequestId === root.sshPrompt.requestId) {
-        root.sshNotifyRequestId = root.sshPromotedAmbiguous ? -1 : message.requestId
+        root.sshNotifyRequestId = !named && root.sshPromotedAmbiguous ? -1 : message.requestId
       }
+      root.sshPrompt.promotedFrom = root.sshPrompt.requestId
       root.sshPrompt.requestId = message.requestId
       root.sshPromptRaw = message
       root.sshPromotedOldId = null
@@ -3086,10 +3137,14 @@ Item {
   }
 
   function onSshAgentMessage(message) {
+    // What is raised or refused from here on is the running helper's.
+    if (message.type === "approval_required" || message.type === "unlock_required") {
+      root.sshCardsInstance = root.sshAgentInstance
+    }
     if (message.type === "approval_required") {
       // Refuse now rather than let the client wait out the deadline.
       if (!sshAgentMayPrompt()) {
-        sshAgentWrite(Model.sshAgentDenyLine(message.requestId))
+        sshAgentDecide(Model.sshAgentDenyLine(message.requestId))
         return
       }
       if (adoptSshPrompt(message)) return
@@ -3106,7 +3161,7 @@ Item {
     // does (approveSshRequest(), unlocking).
     if (message.type === "unlock_required") {
       if (!sshAgentMayPrompt()) {
-        sshAgentWrite(Model.sshAgentUnlockCancelledLine(message.requestId))
+        sshAgentDecide(Model.sshAgentUnlockCancelledLine(message.requestId))
         return
       }
       if (root.sshUnlockRequest !== null) {
@@ -3122,7 +3177,9 @@ Item {
     }
     if (message.type === "request_cancelled") {
       // The request was cancelled by the client, timed out, released on
-      // unlock, or answered by a grant the user just approved ("granted").
+      // unlock, or answered ("granted"): by a grant the user just approved,
+      // or by this panel under the id its unlock prompt had while its
+      // approval_required was still on the way here.
       var live = root.sshPrompt || root.sshUnlockRequest
       if (live && live.requestId === message.requestId) {
         if (message.reason === "granted") {
@@ -3307,6 +3364,8 @@ Item {
   onSshAgentUnlockOnDemandChanged: sendSshAgentOptions()
 
   onSshAgentGateOpenChanged: {
+    // First: nothing of the helper that was is answered or shown again.
+    withdrawSshCards()
     if (sshAgentGateOpen) sendSshAgentOptions()
     if (!sshAgentGateOpen) {
       endSshAgentLoad(false)
