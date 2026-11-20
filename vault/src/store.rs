@@ -804,10 +804,20 @@ mod tests {
         .to_string()
     }
 
-    #[test]
-    fn a_previous_password_is_read_by_position() {
+    /// A store that has taken `vault()` as its list read.
+    fn holding_vault() -> Store {
         let mut store = Store::default();
         store.strip_vault(&vault(), true).unwrap();
+        store
+    }
+
+    fn assert_no_secret(out: &str) {
+        assert!(!out.contains("SECRET"), "reached the panel: {out}");
+    }
+
+    #[test]
+    fn a_previous_password_is_read_by_position() {
+        let store = holding_vault();
         let read = |id: &str, name: &str| {
             let field = SecretField::parse(name)?;
             store.item_secret(id, &field).map(|v| v.as_str().to_owned())
@@ -962,8 +972,7 @@ mod tests {
 
     #[test]
     fn search_covers_what_the_list_shows_and_notes() {
-        let mut store = Store::default();
-        store.strip_vault(&vault(), true).unwrap();
+        let store = holding_vault();
         assert_eq!(store.search("BANK.example"), ["a"]);
         assert_eq!(store.search("recovery"), ["a"]);
         assert_eq!(store.search("1111"), ["c"]);
@@ -984,8 +993,7 @@ mod tests {
 
     #[test]
     fn a_save_updates_one_item_and_a_read_replaces_all() {
-        let mut store = Store::default();
-        store.strip_vault(&vault(), true).unwrap();
+        let mut store = holding_vault();
         let saved = serde_json::json!({ "items": [{ "id": "a", "type": 1, "name": "Bank", "login": { "password": "new" } }], "sshKeys": [] });
         store.strip_vault(&saved.to_string(), false).unwrap();
         assert!(store.item("a").unwrap().contains("\"new\""));
@@ -1007,8 +1015,7 @@ mod tests {
             let id = store.request_stage();
             (id, store.stage_vault(id, raw).unwrap())
         };
-        let mut store = Store::default();
-        store.strip_vault(&vault(), true).unwrap();
+        let mut store = holding_vault();
 
         // Staged: handed on without secrets, and not answered from.
         let (first, shown) = stage(&mut store, &read("staged-1"));
@@ -1056,8 +1063,7 @@ mod tests {
 
     #[test]
     fn a_read_of_another_shape_is_refused_and_empties_nothing() {
-        let mut store = Store::default();
-        store.strip_vault(&vault(), true).unwrap();
+        let mut store = holding_vault();
         for raw in [
             r#"{"id":"x","login":{"password":"SECRET"}}"#,
             r#"{"items":{"id":"x","login":{"password":"SECRET"}}}"#,
@@ -1098,11 +1104,7 @@ mod tests {
         })
         .to_string();
         let out = store.strip_vault(&read, true).unwrap();
-        assert!(
-            !out.contains("SECRET"),
-            "reached the panel: {}",
-            out.as_str()
-        );
+        assert_no_secret(&out);
         // `item` hands the held copy to the panel, so it is gone there too.
         for id in ["x", "y", "s", "t"] {
             let held = store.item(id).unwrap();
@@ -1195,11 +1197,7 @@ mod tests {
         ] })
         .to_string();
         let out = store.strip_vault(&read, true).unwrap();
-        assert!(
-            !out.contains("SECRET"),
-            "reached the panel: {}",
-            out.as_str()
-        );
+        assert_no_secret(&out);
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             parsed["items"][0]["attachments"],
@@ -1271,11 +1269,7 @@ mod tests {
             ] }] })
         .to_string();
         let out = store.strip_vault(&read, true).unwrap();
-        assert!(
-            !out.contains("SECRET"),
-            "reached the panel: {}",
-            out.as_str()
-        );
+        assert_no_secret(&out);
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             parsed["items"][0]["qsbwHeld"]["passwordHistory"],
@@ -1328,8 +1322,7 @@ mod tests {
 
     #[test]
     fn a_forgotten_item_is_gone_from_item_and_search() {
-        let mut store = Store::default();
-        store.strip_vault(&vault(), true).unwrap();
+        let mut store = holding_vault();
         let held = store.search("  ").len();
         store.forget_item("a");
         assert!(store.item("a").is_none());
