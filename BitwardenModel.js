@@ -6823,16 +6823,6 @@ function unlockKeyPath(pluginDir, source, arch) {
 // plugin must not manage). Private material never goes here.
 var SSH_EXPORT_SUBDIR = "qs-bitwarden-cli/ssh"
 
-// The directory for a message: the one a failed script says it acted on (its
-// last `dir=` line, see sshExportDirPrelude()), or just "the public key
-// directory" when it printed none that can be shown. Never worked out here:
-// the script's environment is its own.
-function sshExportDisplayDir(stdout) {
-  var m = String(stdout === undefined || stdout === null ? "" : stdout).match(/(?:^|\n)dir=(\/[^\n]*)\n?$/)
-  if (!m || m[1].length > 300 || /[\x00-\x1f\x7f]/.test(m[1])) return "the public key directory"
-  return m[1]
-}
-
 // Vault item names are untrusted: sanitized like attachment names, then
 // ".pub" added. Duplicate names get the item id instead of overwriting.
 function sshExportFileName(name, itemId, taken) {
@@ -6898,8 +6888,6 @@ function sshExportDirPrelude() {
     + "fi; "
     + "case \"$__base\" in /*) ;; *) exit " + SSH_EXPORT_EXIT_NO_HOME + ";; esac; "
     + "__dir=\"$__base/" + SSH_EXPORT_SUBDIR + "\"; "
-    // A failure names the directory it was about (sshExportDisplayDir()).
-    + "trap '[ \"$?\" -eq 0 ] || printf \"dir=%s\\n\" \"$__dir\"' EXIT; "
     // Both components the plugin owns, not just the last: through a symlinked
     // parent, export and clear would write and prune *.pub files elsewhere.
     + "for __own in \"$(dirname \"$__dir\")\" \"$__dir\"; do "
@@ -6979,21 +6967,22 @@ function sshExportClearCommand() {
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
+// The messages name no path: the scripts resolve the directory from their
+// own environment, which is not this one's to restate.
 function parseSshExportResult(exitCode, stdout) {
-  var dir = sshExportDisplayDir(stdout)
   var failures = {}
   failures[SSH_EXPORT_EXIT_NO_HOME] = { code: "NO_HOME",
     message: "No data directory is set, so public key files cannot be written." }
   failures[SSH_EXPORT_EXIT_UNSAFE_DIR] = { code: "UNSAFE_DIR",
-    message: dir.charAt(0).toUpperCase() + dir.slice(1) + " is not a directory this plugin will write to. "
-      + "Remove or rename whatever is at that path." }
+    message: "The public key directory is not a directory this plugin will write to. "
+      + "Remove or rename whatever is in its place." }
 
   return parseExitCodeResult(exitCode, stdout, function(out) {
     if (out === "exported" || out === "cleared" || out === "") {
       return { ok: true, code: "OK", message: "" }
     }
     return null
-  }, failures, "Could not write or remove public key files in " + dir + ".")
+  }, failures, "Could not write or remove files in the public key directory.")
 }
 
 // -------------------------------------------------------------------------
