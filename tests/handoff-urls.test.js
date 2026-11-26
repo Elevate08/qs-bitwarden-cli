@@ -148,10 +148,26 @@ for (const [label, input] of [
   ["a tab", "example.com\t/x"],
   ["a NUL", "https://example.com/\u0000"],
   ["an escape", "https://example.com/\u001b[2J"],
-  ["a DEL", "https://example.com/\u007f"]
+  ["a DEL", "https://example.com/\u007f"],
+  ["a C1 control", "https://example.com/\u0085x"],
+  ["a line separator", "https://example.com/\u2028x"],
+  ["a paragraph separator", "https://example.com/\u2029x"],
+  ["a bidi override", "https://example.com/\u202eevil"],
+  ["a bidi isolate", "https://example.com/\u2066evil\u2069"]
 ]) {
   const r = opens(input)
   check(`a URL with ${label} inside is refused`, !r.ok && r.reason === "ambiguous", JSON.stringify(r))
 }
+
+// The same invisible-character policy escapes the extended set rather than
+// only C0/C1 and the original bidi block.
+const invisible = "\u061c\u00ad\u2060\u180e\ufe0f\udb40\udc01"
+const shown = Model.visibleText("a" + invisible + "b")
+check("visibleText covers marks, separators, variation selectors and tag characters",
+  shown === "a\\u061c\\u00ad\\u2060\\u180e\\ufe0f\\ue0001b",
+  JSON.stringify(shown))
+check("and none of the raw characters survive",
+  !["\u061c", "\u00ad", "\u2060", "\u180e", "\ufe0f", "\udb40\udc01"].some(c => shown.includes(c)),
+  JSON.stringify(shown))
 
 done()

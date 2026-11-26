@@ -17,7 +17,7 @@ const service = read("Service.qml")
 const panel = read("Panel.qml")
 const manifest = JSON.parse(read("manifest.json"))
 
-const { check, done } = createSuite("unlock-envelope-service")
+const { check, eq, done } = createSuite("unlock-envelope-service")
 
 const bodyOf = name => functionBody(service, name)
 
@@ -100,8 +100,9 @@ check("the held old password is taken once, and cleared when no typed unlock use
 check("a held reference is forgotten by name, and plain text is left alone",
   /var name = Model\.heldSecretName\(value\)\s*if \(name\) forgetVaultSecret\(name\)/.test(bodyOf("forgetHeldPassword")),
   bodyOf("forgetHeldPassword"))
-check("a quick unlock's password is forgotten when the unlock succeeds, unless the legacy PIN migration still needs it",
-  /migrateLegacyPin\(pendingUnlockPassword, pendingPinForMigration\)\s*\} else \{\s*if \(pendingUnlockFrom !== ""\) forgetHeldPassword\(pendingUnlockPassword\)/.test(unlockSuccess),
+check("a quick unlock's password is forgotten when the unlock succeeds, unless the legacy PIN migration or a floor re-wrap still needs it",
+  /migrateLegacyPin\(pendingUnlockPassword, pendingPinForMigration\)[\s\S]{0,500}?if \(pendingUnlockFrom !== ""\) forgetHeldPassword\(pendingUnlockPassword\)/
+    .test(unlockSuccess),
   unlockSuccess)
 check("the legacy PIN migration forgets it when it ends, on every path",
   /!quickUnlockAvailable\) \{\s*forgetHeldPassword\(password\)/.test(bodyOf("migrateLegacyPin"))
@@ -197,9 +198,81 @@ check("and says so when a PIN or key went with it",
   /s\.fingerprint && \(s\.pin \|\| \(Array\.isArray\(s\.fido\) && s\.fido\.length > 0\)\)/.test(bodyOf("fingerprintForgottenText"))
     && /stored password was deleted, so set up PIN or security-key unlock again/.test(bodyOf("fingerprintForgottenText"))
     && /flashNotification\(notice\)/.test(bodyOf("forgetFingerprintUnlock")), bodyOf("fingerprintForgottenText"))
-check("a wrap from a cancelled setup is still a plain removal",
-  /epochOperationIsStale\("fingerprintAdd"\)[\s\S]{0,300}?removeQuickUnlockMethod\(\{ kind: "remove", method: "fingerprint" \}\)/
+check("a wrap from a cancelled setup deletes the envelope, since it exposes the key",
+  /epochOperationIsStale\("fingerprintAdd"\)[\s\S]{0,500}?deleteEnvelopeForAccount\(/
     .test(bodyOf("submitFingerprintSetup")), bodyOf("submitFingerprintSetup"))
+// The setup names the account it began for; a switch before the write lands
+// must not move the delete to the account that became active, and the add's
+// completion must still arrive so that delete is queued at all.
+{
+  const bind = (v, names) => {
+    for (const n of names) {
+      const body = functionBody(service, n)
+      if (!body) throw new Error("missing function " + n)
+      v[n] = new Function("scope", "with(scope){" + body + "\nreturn " + n + "}")(v)
+    }
+  }
+  const v = {
+    Model, Qt: { callLater: f => f() },
+    quickUnlockAvailable: true, quickUnlockUnavailableReason: "",
+    accountId: "user-a", accountServer: "https://a.invalid",
+    activeSlot: "default", vaultEpoch: 1, fpSetupMaster: "synthetic-master",
+    fpBusy: false, fpSetupActive: true, fpError: "", legacyFingerprintStored: false,
+    fingerprintStored: false, currentScreen: "fingerprint", refreshes: 0,
+    envelopeJobs: [], envelopeJob: null, logoutPending: false, allCredentialsClearPending: false,
+    envelopeProc: { running: false, command: [], environment: {}, outputHeld: false, runId: 0 },
+    envelopeStdout: { text: "" },
+    envelopeAccount() { return { id: this.accountId, server: this.accountServer, slot: this.activeSlot } },
+    envelopeTool() { return "/synthetic/tool" },
+    beginEpochOperation() {},
+    epochOperationIsStale() { return this.activeSlot !== "default" },
+    refreshEnvelope() { this.refreshes++ },
+    finishScrubRun() { return false },
+    clearProcessCollectorSoon() {},
+    recheckStatusAfterUnlock() {},
+    forgetHeldPassword() {},
+    withEnvelopeAccount(then) { then() },
+    noteQuickUnlockEnabled() {},
+    requestMasterCredentialClear() {},
+    recomputeFingerprintStored() {},
+    writeSetting() {},
+    flashNotification() {}
+  }
+  v.root = v
+  bind(v, ["submitFingerprintSetup", "addQuickUnlockMethod", "addQuickUnlockMethodWith",
+    "queueEnvelopeJob", "pumpEnvelopeJobs", "onEnvelopeJobExited", "deleteEnvelopeForAccount",
+    "writeEnvelope"])
+  v.submitFingerprintSetup()
+  const addJob = v.envelopeJob
+  eq("the fingerprint add starts for the active account", addJob && addJob.command.join(" ").includes("fingerprint"), true)
+  eq("the fingerprint add completes after a slot change", addJob.alwaysDone, true)
+
+  // A switch between the add and its completion.
+  v.activeSlot = "0123456789abcdef"
+  v.accountId = "user-b"
+  v.accountServer = "https://b.invalid"
+  v.vaultEpoch += 1
+  // Deliver the add's success through the real exit path.
+  v.envelopeProc.running = false
+  v.onEnvelopeJobExited(0)
+
+  const job = v.envelopeJob
+  eq("a stale enrolment deletes the envelope of the account it began for",
+    job && JSON.stringify(job.command), JSON.stringify(Model.unlockEnvelopeDeleteForAccountCommand("/synthetic/tool",
+      { id: "user-a", server: "https://a.invalid", slot: "default" })))
+  eq("with that account's slot, not the active one", job && job.slot, "default")
+  eq("and that account's environment", job && JSON.stringify(job.accountEnv),
+    JSON.stringify(Model.envelopeAccountEnv({ id: "user-a", server: "https://a.invalid" })))
+  check("the delete is not for the account that became active",
+    job && job.slot !== v.activeSlot && !JSON.stringify(job.command).includes("user-b"))
+  eq("no delete is queued for the new account either", v.envelopeJobs.length, 0)
+}
+check("the fingerprint retry write keeps the same completion guarantee",
+  /root\.writeEnvelope\(command, again, function\(added, addCode\) \{[\s\S]{0,150}?\}, undefined, \{ alwaysDone: alwaysDone \}\)/
+    .test(bodyOf("addQuickUnlockMethodWith")), bodyOf("addQuickUnlockMethodWith"))
+check("the PIN add does not outlive a switch, where its cleanup would target the new account",
+  !/alwaysDone/.test(bodyOf("submitPinSetup")), bodyOf("submitPinSetup"))
+
 check("settings state the floor rule where it applies",
   /fingerprintUnlock \|\| !fingerprintStored\) return ""[\s\S]{0,200}?only as protected as/
     .test(bodyOf("settingNote"))
@@ -255,7 +328,7 @@ check("a key whose password was changed elsewhere is kept, and feeds the re-seal
   /pendingUnlockFrom === "fido" && fidoFromEnvelope\) \{[\s\S]{0,600}?rotationOldPassword = pendingUnlockPassword/
     .test(unlockOutput), "")
 check("the enable path that touches a key shares the master-password check and bw fallback",
-  /function addQuickUnlockMethodWith\(password, makeCommand, extraEnv, done\)/.test(service)
+  /function addQuickUnlockMethodWith\(password, makeCommand, extraEnv, done(, options)?\)/.test(service)
     && /addQuickUnlockMethodWith\(password, function\(tool, account\) \{\s*return Model\.unlockEnvelopeUpdateCommand/
       .test(bodyOf("addQuickUnlockMethod")),
   bodyOf("addQuickUnlockMethod"))
@@ -300,7 +373,7 @@ check("the fingerprint option no longer says the password is stored as-is",
 // ways in. Turning one off used to remove only the account on screen's.
 
 const pinChanged = service.slice(service.indexOf("onPinUnlockChanged:"), service.indexOf("onPinUnlockChanged:") + 700)
-const fpChanged = service.slice(service.indexOf("onFingerprintUnlockChanged:"), service.indexOf("onFingerprintUnlockChanged:") + 900)
+const fpChanged = service.slice(service.indexOf("onFingerprintUnlockChanged:"), service.indexOf("onFingerprintUnlockChanged:") + 1500)
 const fidoSrc = read("FidoUnlock.qml")
 const fidoArmed = fidoSrc.slice(fidoSrc.indexOf("onArmedChanged:"), fidoSrc.indexOf("onArmedChanged:") + 900)
 check("turning PIN off purges it from every account", /purgeQuickUnlockMethod\("pin"\)/.test(pinChanged), pinChanged)
@@ -308,6 +381,13 @@ check("turning fingerprint off purges it from every account",
   /purgeQuickUnlockMethod\("fingerprint"\)/.test(fpChanged), fpChanged)
 check("and the notice is settled from the summary before the purge empties it",
   /var notice = fingerprintForgottenText\(\)[\s\S]{0,200}?purgeQuickUnlockMethod\("fingerprint"\)\s*flashNotification\(notice\)/.test(fpChanged), fpChanged)
+check("startup reconciliation queues an all-slot fingerprint purge, not only the active account",
+  /!started \|\| !accountsLoaded[\s\S]{0,400}?purgeQuickUnlockMethod\("fingerprint"\)/.test(fpChanged)
+    && /!started \|\| !accountsLoaded[\s\S]{0,400}?forgetFingerprintUnlock\(\)/.test(fpChanged),
+  fpChanged)
+check("a cancelled fingerprint enrolment deletes the whole envelope, not just its wrap",
+  /epochOperationIsStale\("fingerprintAdd"\)[\s\S]{0,500}?deleteEnvelopeForAccount\(/
+    .test(bodyOf("submitFingerprintSetup")), bodyOf("submitFingerprintSetup"))
 check("the fingerprint purge deletes the envelope instead of storing one without the wrap",
   /method === "fingerprint"\) \{[\s\S]{0,200}?keyringClearEntryScript\(keyringEntryName\(KEYRING_ENVELOPE, slot\)\) \+ " \|\| exit 1; exit 0; "/
     .test(read("BitwardenModel.js")), "")
@@ -340,12 +420,49 @@ check("a method just enabled is not taken for off while its setting write lands"
 check("a method that is off is purged even with no envelope entry for it, which clears its legacy entry",
   !/present/.test(reconcile) && !/summary/.test(reconcile)
     && /if \(!quickUnlockSettingOff\(c\.setting\)\) continue/.test(reconcile)
-    && /queueQuickUnlockPurge\(\[activeSlot\], c\.method, key\)/.test(reconcile),
+    && /accountSlotsForPurge\(\)[\s\S]{0,100}?queueQuickUnlockPurge\(slots, c\.method, key\)/.test(reconcile),
   reconcile)
 check("an account with no envelope at all is reconciled too",
   /code === Model\.envelopeExitCodes\(\)\.absent\) \{\s*root\.reconcileDisabledMethods\(\)/.test(refresh), refresh)
 check("successful cleanup is reconciled; retries of a failure have a bound",
   /reconciledMethods\[key\]\) continue/.test(reconcile)
     && /quickUnlockPurgeMaxAttempts/.test(bodyOf("queueQuickUnlockPurge")), reconcile)
+
+// A successful PIN open below the current PIN Argon2 floor re-wraps it with
+// the PIN and password still in hand (QK-3).
+const pinFloor = new Function("Model",
+  functionBody(service, "pinWrapBelowFloor") + "\nreturn pinWrapBelowFloor")(Model)
+const floor = Model.ENVELOPE_ARGON2
+eq("a current-floor PIN wrap needs no re-wrap",
+  pinFloor({ pin: { m: floor.m, t: floor.t } }), false)
+eq("an older 64 MiB / 3-pass PIN wrap needs one",
+  pinFloor({ pin: { m: 65536, t: 3 } }), true)
+eq("one below either floor dimension needs one",
+  pinFloor({ pin: { m: floor.m, t: floor.t - 1 } }) && pinFloor({ pin: { m: floor.m - 1, t: floor.t } }), true)
+eq("no PIN wrap needs none", pinFloor({ pin: null }), false)
+const rewrap = bodyOf("rewrapPinAtFloor")
+check("the re-wrap uses the existing add-pin job and the current floor",
+  /kind: "add-pin"/.test(rewrap)
+    && /Model\.unlockEnvelopeUpdateCommand/.test(rewrap)
+    && /Model\.keyringSecretEnvVar\(\)\] = master/.test(rewrap)
+    && /Model\.pinEnvVar\(\)\] = pinValue/.test(rewrap)
+    && /secretOutput: true/.test(rewrap),
+  rewrap)
+check("an add-method write treats the envelope it prints as secret too",
+  /queueEnvelopeJob\(\{\s*command: command, env: env, secretOutput: true, writes: true/.test(bodyOf("addQuickUnlockMethodWith")),
+  bodyOf("addQuickUnlockMethodWith"))
+check("the successful unlock starts the re-wrap before dropping the password",
+  /pendingUnlockFrom === "pin" && pinFromEnvelope[\s\S]{0,600}?rewrapPinAtFloor\(pendingUnlockPassword, root\.pinRewrapPin\)/
+    .test(unlockSuccess)
+    && /pinWrapBelowFloor\(envelopeSummary\)/.test(bodyOf("onEnvelopePinResult")),
+  unlockSuccess)
+
+// A pinentry capture with no helper cannot run; its synthetic failure answers
+// for the start that asked, not whichever run replaced it by callback time.
+const vaultStart = bodyOf("vaultStart")
+check("a synthetic missing-pinentry finish carries the run it answers for",
+  /var seq = proc\.runSeq[\s\S]{0,200}?proc\.finish\(Model\.pinentryExitCodes\(\)\.missing, "", "no vault helper", false, false, seq\)/
+    .test(vaultStart),
+  vaultStart)
 
 done()

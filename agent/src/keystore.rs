@@ -181,8 +181,12 @@ impl CandidateLoad {
             return Ok(self.skip(item.item_id, SkipCode::Duplicate));
         }
 
-        // From the validated key, not the vault's copy.
-        let public_key_openssh = match key.public_key().to_openssh() {
+        // From the validated key, not the vault's copy. The comment is reduced
+        // to one safe line because the panel writes this string to a `.pub`
+        // file.
+        let mut public = key.public_key().clone();
+        public.set_comment(exported_comment(public.comment()));
+        let public_key_openssh = match public.to_openssh() {
             Ok(text) => text,
             Err(_) => return Ok(self.skip(item.item_id, SkipCode::MalformedPublicKey)),
         };
@@ -202,6 +206,20 @@ impl CandidateLoad {
         self.skipped.push(SkippedItem { item_id, code });
         Some(code)
     }
+}
+
+/// The comment written into the exported one-line `.pub` file: only its first
+/// line, with control, zero-width and bidi characters removed. The private
+/// key's comment is vault-controlled metadata, and a newline in it would add a
+/// line to the file the panel exports.
+fn exported_comment(comment: &str) -> String {
+    comment
+        .split(['\n', '\r'])
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !crate::protocol::is_invisible(*c))
+        .collect()
 }
 
 /// The only owner of live private keys.

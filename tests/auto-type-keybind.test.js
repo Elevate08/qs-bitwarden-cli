@@ -76,6 +76,10 @@ check("register runs bash with the script, then the line and comment as argument
 check("the register script never contains the chord or the line",
   !reg[2].includes("SUPER + ALT + Q") && !reg[2].includes("o.bind(") && /"\$1"/.test(reg[2]) && /"\$2"/.test(reg[2]),
   reg[2])
+check("register serialises its grep and append with flock, and refuses a symlink",
+  /exec 9>>"\$__f"/.test(reg[2]) && /flock -x/.test(reg[2]) && />&9/.test(reg[2])
+    && /\[ ! -L "\$__f" \]/.test(reg[2]) && !/>> "\$__f"/.test(reg[2]),
+  reg[2])
 const rem = Model.autoTypeKeybindRemoveCommand("SUPER + ALT + Q")
 check("remove passes the line and comment as arguments, never in the script",
   rem[4] === lineFor("SUPER + ALT + Q") && rem[5] === COMMENT && !rem[2].includes("SUPER + ALT + Q")
@@ -313,7 +317,7 @@ esac
 // A PATH without any hyprctl: the tools the scripts use, linked one by one.
 const noHyprBin = path.join(work, "nohypr")
 fs.mkdirSync(noHyprBin)
-for (const tool of ["bash", "grep", "tail", "head", "jq", "awk", "mktemp", "readlink", "dirname", "chmod", "mv", "rm", "cat", "tr"]) {
+for (const tool of ["bash", "grep", "tail", "head", "jq", "awk", "mktemp", "readlink", "dirname", "chmod", "mv", "rm", "cat", "tr", "flock"]) {
   const found = spawnSync("bash", ["-c", "command -v " + tool], { encoding: "utf8" }).stdout.trim()
   if (found) fs.symlinkSync(found, path.join(noHyprBin, tool))
 }
@@ -428,11 +432,12 @@ try {
     run(Model.autoTypeKeybindRegisterCommand(chord), dirHome).code === 4, "expected 4")
   const dangling = makeHome("dangling", { "hyprland.lua": hyprlandLua })
   fs.symlinkSync(path.join(work, "nowhere.lua"), fileIn(dangling))
-  check("a dangling symlink is refused, and its target is not created",
-    run(Model.autoTypeKeybindRegisterCommand(chord), dangling).code === 4 && !fs.existsSync(path.join(work, "nowhere.lua")),
-    "expected 4")
+  check("a symlink is refused, and its target is not created",
+    run(Model.autoTypeKeybindRegisterCommand(chord), dangling).code === 9
+      && !fs.existsSync(path.join(work, "nowhere.lua")),
+    "expected 9")
 
-  // A symlink to a regular file (a dotfiles checkout) is followed and kept.
+  // A symlink to a regular file (a dotfiles checkout) is not written through.
   const dots = path.join(work, "dotfiles")
   fs.mkdirSync(dots)
   fs.writeFileSync(path.join(dots, "bindings.lua"), template)
@@ -440,13 +445,23 @@ try {
   const linked = makeHome("linked", { "hyprland.lua": hyprlandLua })
   fs.symlinkSync(path.join(dots, "bindings.lua"), fileIn(linked))
   const linkedAdd = run(Model.autoTypeKeybindRegisterCommand(chord), linked)
+  check("register refuses a symlink instead of writing through it",
+    linkedAdd.code === 9 && linkedAdd.err.includes("symlink")
+      && fs.lstatSync(fileIn(linked)).isSymbolicLink()
+      && fs.readFileSync(path.join(dots, "bindings.lua"), "utf8") === template
+      && fs.readdirSync(dots).join(",") === "bindings.lua",
+    JSON.stringify({ linkedAdd, files: fs.readdirSync(dots) }))
+
+  // Removal still rewrites an existing pair in the target, keeping the link.
+  fs.writeFileSync(path.join(dots, "bindings.lua"),
+    template.replace(/([^\n])$/, "$1\n") + "\n" + COMMENT + "\n" + lineFor(chord) + "\n")
   const linkedRemove = run(Model.autoTypeKeybindRemoveCommand(chord), linked)
-  check("through a symlink: appended to its target, removed again, the link and mode kept",
-    linkedAdd.code === 0 && linkedRemove.code === 0 && fs.lstatSync(fileIn(linked)).isSymbolicLink()
+  check("remove rewrites the target through the link and keeps the link and mode",
+    linkedRemove.code === 0 && fs.lstatSync(fileIn(linked)).isSymbolicLink()
       && fs.readFileSync(path.join(dots, "bindings.lua"), "utf8") === template.replace(/([^\n])$/, "$1\n")
       && (fs.statSync(path.join(dots, "bindings.lua")).mode & 0o777) === 0o640
       && fs.readdirSync(dots).join(",") === "bindings.lua",
-    JSON.stringify({ linkedAdd, linkedRemove, files: fs.readdirSync(dots) }))
+    JSON.stringify({ linkedRemove, files: fs.readdirSync(dots) }))
 
   // No hyprctl: the file is still written, and the message says to reload.
   const quiet = makeHome("quiet", { "bindings.lua": template, "hyprland.lua": hyprlandLua })

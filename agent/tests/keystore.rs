@@ -185,6 +185,25 @@ fn undersized_rsa_is_rejected_during_load() {
 }
 
 #[test]
+fn exported_public_key_comment_cannot_add_lines_or_controls() {
+    let mut key = ed25519();
+    key.set_comment("work\nssh-ed25519 AAAA injected\u{1b}[31m\u{202e}\u{200b}");
+    let mut store = KeyStore::new();
+    let mut load = store.begin_load(51, 4096).unwrap();
+    load.add(item("named", &key)).unwrap();
+    store.publish(load).unwrap();
+
+    let exported = &store.public_identities()[0].public_key_openssh;
+    assert!(exported.starts_with("ssh-ed25519 "));
+    assert!(!exported.contains('\n'));
+    assert!(!exported.contains('\r'));
+    assert!(!exported.chars().any(char::is_control));
+    assert!(!exported.contains('\u{202e}'));
+    assert!(!exported.contains('\u{200b}'));
+    assert!(exported.ends_with(" work"));
+}
+
+#[test]
 fn logout_invalidates_permits_and_clears_public_and_private_sets() {
     let key = ed25519();
     let public_blob = key.public_key().to_bytes().unwrap();

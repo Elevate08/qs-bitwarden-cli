@@ -33,8 +33,9 @@ you to it.
 ## In scope
 
 - A master password, session key, PIN, FIDO2 hmac-secret or SSH private key
-  reaching disk, the journal, another process's argv or environment, or
-  another user.
+  reaching disk, the journal, another user, or another user's process, command
+  line or environment. (A process running as you is a separate, documented
+  limit, not a boundary this policy claims; see below.)
 - Opening the quick-unlock envelope without the PIN, key or fingerprint it is
   protected by, beyond the limits the README documents.
 - The SSH agent signing without an approval, outside the grant's program, key,
@@ -56,12 +57,35 @@ you to it.
   by guessing the PIN from a copy, or read it while fingerprint unlock was on
   and before it was turned off. Changing the master password re-wraps the
   same key, so that program can open the later copies too until the envelope
-  is deleted: turning fingerprint unlock off deletes it, and so does logging
-  out of the account; the methods are then set up again under a new key.
+  is deleted: turning fingerprint unlock off deletes it, and so does a
+  cancelled fingerprint enrolment, and so does logging out of the account; the
+  methods are then set up again under a new key.
 - What the IPC target lets any program running as you do: open, close and
-  toggle the panel, lock, sync, switch the active account, read which accounts
-  exist (their emails and servers) and, with auto-type on, trigger an armed
-  type. It never unlocks, reads an item or changes a setting.
+  toggle the panel; lock; sync; switch the active account; read which accounts
+  exist (their emails and servers) and non-secret state (`status`, `vaultHost`,
+  `desktopState`, `sshAgentStatus`, including which quick-unlock methods are
+  ready and whether an unlock or prompt is in progress); jump to `settings` or
+  `setup`; and, with auto-type on, trigger an armed type. `open` and `toggle`
+  show the panel without cancelling a pinentry or resetting the in-flight
+  unlock guard; `close` abandons authentication state (a pending secret entry,
+  PIN or fingerprint setup, a pending second-factor login, attachment
+  downloads). `settings` and `setup` answer `busy` while an SSH approval is
+  showing in the panel; with the centered approval popup there is no panel
+  screen to replace. No handler unlocks, reads an item or changes a setting.
+- **Same-user isolation is not provided.** This policy does not promise to
+  keep one program running as you out of another's memory, pipes or
+  environment. The documented exposures are: the vault helper authenticates
+  no peer, so a process running as you can open the shell's write end of the
+  helper's stdin pipe through `/proc/<shell>/fd/` and speak its protocol (full
+  vault access, more than the IPC target allows); `BW_PASSWORD` and the
+  `QSBW_*` secrets are readable from the panel shell's `/proc/<pid>/environ`
+  during an API-key login and a FIFO write, and the FIFO is checked then
+  opened by the shell without `O_NOFOLLOW`; a same-UID process can approve an
+  SSH request through the panel's pipe; the FIDO2 hmac is a bearer key
+  readable from the one command's environment while that command runs; and
+  the SSH five-minute cooldown is enforced by the panel, not the helper. These
+  are real within one user account; they are not a boundary the plugin should
+  be assumed to defend.
 - What auto-type, when you turn it on, documents it gives away: the focused
   window gets the password; while a login is armed any program running as
   you can make it type, since the IPC cannot tell who calls it; and `wtype`'s

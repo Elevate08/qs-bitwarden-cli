@@ -39,6 +39,15 @@ Item {
   property bool finishing: false
   // Moves on every start, so a deferred local start can tell it was replaced.
   property int startSeq: 0
+  // The startSeq of the run this process is running now, held by the vault
+  // with the run so a delayed exit is stamped with its own start.
+  property int runSeq: 0
+  // The runSeq of the local child, so its exit is stamped with the run that
+  // produced it too.
+  property int localSeq: 0
+  // The startSeq of the run whose exit this is; set before exited() so a
+  // handler can tell a delayed exit from an earlier (cancelled) run.
+  property int finishSeq: 0
 
   onRunningChanged: {
     if (finishing) return
@@ -48,6 +57,7 @@ Item {
 
   function start() {
     startSeq += 1
+    runSeq = startSeq
     sessionHeld = false
     outputHeld = false
     // A lock's scrub (Model.scrubCommand()): here it is only clearing text.
@@ -57,6 +67,8 @@ Item {
       local.command = Model.scrubCommand()
       local.environment = ({})
       runId = -1
+      localSeq = runSeq
+      local.launchedSeq = runSeq
       local.running = true
       return
     }
@@ -74,26 +86,40 @@ Item {
   function launchLocal(cmd, env, seq) {
     if (seq !== startSeq) return
     if (!running) {
-      finish(143, "", "", false, false)
+      finish(143, "", "", false, false, seq)
       return
     }
-    if (local.running) {
+    // The old child can be on its way out (killLocal() set `exiting`): its
+    // onExited has not run yet, so launching now would overwrite the sequence
+    // it must be stamped with. Wait for it, then try again.
+    if (local.running || local.exiting) {
       Qt.callLater(function() { proc.launchLocal(cmd, env, seq) })
       return
     }
     runId = -1
+    runSeq = seq
+    localSeq = seq
+    // The child's own exit reads this, not the mutable localSeq a later run
+    // would overwrite before a delayed exit arrives.
+    local.launchedSeq = seq
     local.command = cmd
     local.environment = env
     local.stdinEnabled = stdinText !== ""
     local.running = true
   }
 
-  // Called by the vault (or `local`) when the run has ended.
-  function finish(code, out, err, heldSession, heldOutput) {
+  // Called by the vault (or `local`) when the run has ended. `seq` is the
+  // startSeq of the run that ended, so a delayed exit from a cancelled run
+  // cannot borrow the generation of the run that replaced it.
+  function finish(code, out, err, heldSession, heldOutput, seq) {
+    // A delayed exit from a run that has been replaced is not this run's:
+    // clearing runId, running and the collectors would lose the newer run.
+    if (seq !== undefined && seq !== runSeq) return
     if (stdout) stdout.text = String(out || "")
     if (stderr) stderr.text = String(err || "")
     sessionHeld = Boolean(heldSession)
     outputHeld = Boolean(heldOutput)
+    finishSeq = (seq === undefined ? runSeq : seq)
     runId = 0
     finishing = true
     running = false
@@ -104,11 +130,22 @@ Item {
   }
 
   function killLocal() {
-    if (local.running) local.running = false
+    // Only a child that is actually running will report an exit. Setting
+    // `exiting` when nothing runs would strand the next launch.
+    if (local.running) {
+      local.exiting = true
+      local.running = false
+    }
   }
 
   Process {
     id: local
+    // The startSeq of the child running here now; its exit is stamped with
+    // this rather than the process's latest run.
+    property int launchedSeq: 0
+    // A killed child is still on its way to onExited; a start waits for it so
+    // it cannot overwrite the sequence that exit must carry.
+    property bool exiting: false
     stdout: StdioCollector { id: localOut; waitForEnd: true }
     stderr: StdioCollector { id: localErr; waitForEnd: true }
     onStarted: {
@@ -119,6 +156,10 @@ Item {
       proc.started()
     }
     onExited: function(exitCode, exitStatus) {
+      // This child's own start generation: launching was held back while it
+      // was exiting, so nothing has overwritten it yet.
+      var seq = launchedSeq
+      exiting = false
       var scrub = Model.isScrubCommand(command)
       var out = localOut.text
       var err = localErr.text
@@ -126,6 +167,8 @@ Item {
       if (!scrub) Qt.callLater(function() {
         if (local.running) return
         local.command = Model.scrubCommand()
+        // The next command starts with no environment of the run it scrubs.
+        local.environment = ({})
         local.running = true
       })
       if (scrub && proc.runId !== -1) return
@@ -138,7 +181,7 @@ Item {
         }
         out = ""
       }
-      proc.finish(exitCode, scrub ? "" : out, scrub ? "" : err, false, held)
+      proc.finish(exitCode, scrub ? "" : out, scrub ? "" : err, false, held, seq)
     }
   }
 }

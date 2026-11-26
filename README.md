@@ -44,6 +44,8 @@ whichever `bw` it finds there.
 
 To update: `omarchy plugin update io.github.elevate08.qs-bitwarden-cli`
 
+Release integrity is checked on the bytes, not on the version string. `bin/` is an exact allow-list -- `SHA256SUMS` plus the six helper paths, regular files only, no symlinks -- and the release and rebuild workflows fail on anything else. A draft release is made public only after its attached assets are compared with the tag's `bin/` and each helper's attestation is re-verified for that commit and tag; a re-run prunes foreign assets. From a checkout, `scripts/verify-helpers.sh --attestations` binds each attestation to `HEAD` (and the exact tag) and proves the bytes were workflow-vouched for that commit and ref, not that this source produced them; `--rebuild` or `--compare-tracked` is the source-to-bytes check. A read-only `master-verify.yml` runs that comparison on every push to `master`, so a Dependabot lockfile bump cannot leave `bin/` stale unnoticed. Attestation covers the six helper binaries only: `Panel.qml`, `Service.qml` and `BitwardenModel.js` run with your privileges and are not attested.
+
 ### Sign in
 
 <img src="docs/screenshots/12-login.png" width="420" align="right" alt="Login screen">
@@ -111,7 +113,15 @@ never changes anything by accident.
 Username, password and the live TOTP with its countdown, the websites attached
 to the item, its notes and any custom fields. Copy any of them with one key.
 An item marked **Master password re-prompt** asks for your master password
-before anything secret of it is shown, copied or edited.
+before its password, TOTP code, notes, card number, card security code,
+identity SSN/passport/licence number, hidden custom fields or attachments are
+shown, copied, opened or saved, and before it is edited or armed for
+auto-type. It is field-level, like Bitwarden's mobile apps rather than its
+desktop app: the item name, folder, username, websites, card brand, holder and
+expiry, identity name/email/phone/company/address, non-hidden custom fields
+and Send contents are readable and copyable without it. Item, attachment and
+re-prompt names are shown through an escaped display copy, so control and
+bidi characters cannot spoof the card; the stored item is unchanged.
 
 **Suggest here** pins this item for the app or site in front of you, so it is
 offered outright next time rather than inferred.
@@ -411,7 +421,7 @@ The first account lives where a terminal `bw` finds it (`~/.config/Bitwarden CLI
 
 ### How your vault is held
 
-While your vault is open, its session key and every item's secrets are held by a small helper process (`bin/<arch>-linux/qs-bitwarden-vault`), not by the shell. If the shell crashes, the core dump systemd keeps has no session key and no passwords in it, except a value you had revealed or an item you were editing, and the shell's own crash dumps still work for diagnosing it. Opening an item shows no secret until you reveal it. A value you copy goes from the helper straight to the clipboard; TOTP codes and search are answered by the helper too. It talks only to the shell that started it, on its stdin and stdout.
+While your vault is open, its session key and every item's secrets are held by a small helper process (`bin/<arch>-linux/qs-bitwarden-vault`), not by the shell. If the shell crashes, the core dump systemd keeps has no session key and no passwords in it, except a value you had revealed or an item you were editing, and the shell's own crash dumps still work for diagnosing it. Opening an item shows no secret until you reveal it. A value you copy goes from the helper straight to the clipboard; TOTP codes and search are answered by the helper too. It has no socket or port: it talks to the shell that started it over that process's stdin and stdout. The helper authenticates no peer, though, so a process running as you can open the shell's end of the pipe through `/proc` and speak to it -- see [docs/vault-helper.md](docs/vault-helper.md#how-the-shell-talks-to-it).
 
 It ships and is verified like the other helpers. If it is missing or fails its check, the vault stays locked and a banner says why, with a click to check again. Setting `allowVaultWithoutHelper` to `true` in `shell.json` holds the vault in the shell instead, as before the helper, with a banner saying crash protection is off. **[How it works and what it does not cover →](docs/vault-helper.md)**
 
@@ -419,8 +429,8 @@ It ships and is verified like the other helpers. If it is missing or fails its c
 
 PIN, fingerprint and FIDO2 unlock all need your master password, because `bw unlock` accepts nothing else. The plugin keeps it **once** per account, in a single keyring item (`service=qs-bitwarden-cli, account=unlock_envelope`, or `unlock_envelope@<slot>` for an account added beside the first):
 
-- The first time `bw` accepts a password you typed -- a login, or unlocking with your master password -- it is encrypted under a random key with XChaCha20-Poly1305, and the whole item is sealed to this machine and your user with `systemd-creds --user`. A copy taken off this machine is useless.
-- Each unlock method you turn on adds its own way to that one key, and none of them stores the password again. Turning a method off in settings removes its way in -- from every account, since the switch is shared -- and one turned off in `shell.json` while the shell was not running is removed at the next start. Turning fingerprint unlock off deletes the stored password itself, for every account that had a fingerprint way in (see below).
+- The first time `bw` accepts a password you typed -- a login, or unlocking with your master password -- it is encrypted under a random key with XChaCha20-Poly1305, and the whole item is sealed to this machine and your user with `systemd-creds --user`. A copy of that keyring item taken off this machine is useless. The seal is only as strong as its host key: with a TPM2 that is the chip; without one, systemd keeps the host key in `/var/lib/systemd/credential.secret` on the same disk, so a copy of the whole disk (not just the keyring item) can open it.
+- Each unlock method you turn on adds its own way to that one key, and none of them stores the password again. Turning a method off in settings removes its way in -- from every account, since the switch is shared -- and one turned off in `shell.json` while the shell was not running is removed at the next start, for every account. Turning fingerprint unlock off deletes the stored password itself, for every account that had a fingerprint way in (see below); a cancelled fingerprint enrolment deletes that account's stored password too.
 - The master password you are asked for when turning a method on is a **check** against the stored one, not a new copy: a wrong one is refused, and nothing you type there is stored.
 - If you change your master password elsewhere, the next unlock with the new one re-seals the stored copy and keeps every method.
 - Logging out of an account deletes its copy; other accounts keep theirs.
@@ -431,9 +441,9 @@ An earlier build could store this item across several lines, which makes gnome-k
 
 Upgrading from 1.10.0 or earlier needs nothing from you. The old entries -- a plaintext copy for fingerprint and for FIDO2, an encrypted one for the PIN -- are moved in as each method is next used, and deleted once the new copy opens.
 
-**The honest limit.** The stored password is only as protected as the weakest method you have turned on, and the settings screen says so. The seal ties the stored item to this machine and this user, so a copy taken elsewhere is useless -- but a program running as you can unseal it here (`systemd-creds --user decrypt`). With fingerprint unlock on, that is all it needs: a fingerprint releases no secret to encrypt with. With a PIN, it can then guess the PIN offline, at its own pace and on every core (see [PIN unlock](#pin-unlock)). A FIDO2 key cannot be bypassed that way, because the key itself produces the secret; root, as always, can read anything.
+**The honest limit.** The stored password is only as protected as the weakest method you have turned on, and the settings screen says so. The seal ties the stored item to this machine and this user, so a copy of the item taken elsewhere is useless (for the no-TPM2 disk case, see above) -- but a program running as you can unseal it here (`systemd-creds --user decrypt`). With fingerprint unlock on, that is all it needs: a fingerprint releases no secret to encrypt with. With a PIN, it can then guess the PIN offline, at its own pace and on every core (see [PIN unlock](#pin-unlock)). A FIDO2 key cannot be bypassed that way, because the key itself produces the secret; root, as always, can read anything. The hmac-secret the key returns is a bearer key: while the panel runs the one command that uses it, a program running as you can read it from that command's environment in `/proc`, and the captured value opens the envelope until the FIDO wrap is removed -- a master-password change does not rotate it. The envelope's recorded Argon2 parameters are bounded at 4 GiB, 64 passes and 16 threads; a hostile envelope at that ceiling can still exhaust a machine's memory and CPU before it fails, so the ceiling is a bound, not a safe budget.
 
-The item keeps one encryption key for as long as it exists: turning the PIN or a key off removes only that method's way to it, and a master password changed elsewhere is re-sealed under the same key. Turning fingerprint unlock off is different: it deletes the item for every account whose item had a fingerprint way in, so a key that a program read while fingerprint unlock was on dies with it; the next unlock with your master password stores it again under a new key, and PIN and FIDO2 unlock for those accounts must be set up again. A key recovered another way, by guessing the PIN from a copy of the item, lasts until the item is deleted, a password change included. To get a fresh key then, log out of the account and sign in again (logging out deletes its stored password) and set the methods up again.
+The item keeps one encryption key for as long as it exists: turning the PIN or a key off removes only that method's way to it, and a master password changed elsewhere is re-sealed under the same key. Turning fingerprint unlock off is different: it deletes the item for every account whose item had a fingerprint way in, so a key that a program read while fingerprint unlock was on dies with it; a cancelled or stale fingerprint enrolment that lands after the setting changed deletes the whole item too, and the unlock tool refuses to remove only the fingerprint wrap. The next unlock with your master password stores it again under a new key, and PIN and FIDO2 unlock for those accounts must be set up again. A key recovered another way, by guessing the PIN from a copy of the item, lasts until the item is deleted, a password change included. To get a fresh key then, log out of the account and sign in again (logging out deletes its stored password) and set the methods up again.
 
 ### PIN unlock
 
@@ -441,7 +451,9 @@ Turn on **Unlock with PIN** in the settings screen. Confirm your master password
 
 The PIN reaches the stored password through **Argon2id** (256 MiB of memory, 4 passes), from the OS `argon2` tool. That cost is the whole defence against guessing: a program running as you can copy the stored item, unseal it and try PINs offline on every core. Measured on a 16-thread laptop, one guess takes about 0.46 s and 16 in parallel make about 17 a second, so every PIN of **6 digits falls in about 16 hours, 7 digits in about 7 days, and 8 digits in about 2 months** (4 digits took about 10 minutes, which is why it is no longer allowed). A wrong PIN always fails -- the encryption is authenticated, so there is no "decrypts to garbage" case.
 
-Five wrong attempts at the panel removes the PIN's way in, and turning it back on needs your master password. That limit applies only to guesses typed into the panel's own screen, not to a copy of the stored item; the Argon2 cost is what stands behind it.
+A PIN wrap written by an older version may open at 64 MiB and 3 passes, about five times cheaper (a 6-digit PIN in a few hours). After a successful PIN unlock below the current floor the panel re-wraps it at 256 MiB / 4, so the 0.46 s figure applies from then on; if that re-wrap fails, the unlock still succeeds and the panel says the cost was not updated.
+
+Five wrong attempts at the panel removes the PIN's way in, and turning it back on needs your master password. That limit is per process: a successful unlock starts the count again, and a shell restart resets it. It applies only to guesses typed into the panel's own screen, not to a copy of the stored item. It is a UI limit; the Argon2 cost is what stands behind it.
 
 ### Fingerprint unlock
 
@@ -461,7 +473,7 @@ Set `fingerprintUnlock` to `true` to unlock the vault with a finger instead of y
 
 PAM can prove that you are present, but a fingerprint releases no secret, so it cannot encrypt anything by itself. Fingerprint unlock is the one method whose way in is protected only by the machine seal, which means **a program running as you while you are logged in can open the stored password without your finger**. This is the same trade the official Bitwarden desktop client makes for its own biometric unlock. It is off by default and worth leaving off on a shared or unattended machine -- and with it on, a PIN or a key does not make the stored password any safer.
 
-Turning the setting off deletes the stored password itself, for every account whose stored password had a fingerprint way in, since the fingerprint's way in exposes the item's encryption key; the next unlock with your master password stores it again under a new key, and PIN and FIDO2 unlock for those accounts must be set up again. Logging out deletes the account on screen's copy only.
+Turning the setting off deletes the stored password itself, for every account whose stored password had a fingerprint way in, since the fingerprint's way in exposes the item's encryption key; a cancelled fingerprint enrolment deletes that account's whole item too. The next unlock with your master password stores it again under a new key, and PIN and FIDO2 unlock for those accounts must be set up again. Logging out deletes the account on screen's copy only.
 
 **A closed lid takes the option off the screen.** The reader is on the laptop body, so with the lid shut -- clamshell mode, or simply closed on a docked machine -- there is nothing to touch. While it is down, the locked screen hides **Unlock with Fingerprint**, the SSH prompt does the same, and the reader is not armed on open. Omarchy's own detector (`omarchy-hw-laptop-closed`) decides, and a machine with no lid never reports one. Nothing is forgotten: the settings toggle is unchanged, and the option is back the moment the lid opens. A FIDO2 key on a cable is unaffected.
 
@@ -479,7 +491,7 @@ Set `fidoUnlock` to `true` to unlock the vault with a FIDO2 authenticator (a Yub
 1. Switch **Unlock with FIDO2 key** on in the settings screen. If no key is registered, it first hands off to `omarchy setup security fido2`; otherwise confirm your master password and touch the key once.
 2. On every later lock, opening the panel arms the key if one is plugged in (falling back to the fingerprint reader otherwise). One touch asks the key for a secret only it can produce -- its `hmac-secret` for the registered credential -- and that secret opens the stored password. The password field remains available as a fallback at all times.
 
-The key will not produce that secret without a touch, so unlocking needs the key itself, not just a program able to read your keyring. Each registered key that is plugged in when you turn the option on gets its own way in, so a backup key works too.
+The key will not produce that secret without a touch, so unlocking needs the key itself, not just a program able to read your keyring. But once produced, the hmac-secret is a bearer key: a program running as you can read it from the one command's environment while that command runs, and the captured value opens the FIDO wrap until you remove it (turning the setting off, or logging out). Each registered key that is plugged in when you turn the option on gets its own way in, so a backup key works too.
 
 Registrations made with `+pin` or `+verification` (a key PIN at every system prompt) are not used: the panel cannot collect the key's PIN yet, and a touch alone would be weaker than what the registration asks of the system.
 
@@ -624,10 +636,13 @@ o.bind("SUPER + CTRL + BACKSLASH", "Bitwarden auto-type", "omarchy-shell io.gith
 ```
 
 then runs `hyprctl reload config-only` and shows the result, or any config
-error Hyprland reports. Nothing else in the file is touched. It refuses when
-`bindings.lua` already has a line that runs `autoType`, and creates the file
-only when it is missing and your `~/.config/hypr/hyprland.lua` loads it, as
-Omarchy's does. **Remove Keybinding** takes out those two lines again, and
+error Hyprland reports. Nothing else in the file is touched. It refuses a
+symlinked `bindings.lua` rather than writing through it, and holds an
+exclusive `flock` so two concurrent registrations cannot both append. It
+refuses when `bindings.lua` already has a line that runs `autoType`, and
+creates the file only when it is missing and your
+`~/.config/hypr/hyprland.lua` loads it, as Omarchy's does. **Remove
+Keybinding** takes out those two lines again, and
 only while they are exactly as the plugin wrote them; a binding you wrote or
 changed yourself is shown with its line number, for you to edit there.
 
@@ -736,8 +751,8 @@ omarchy-shell io.github.elevate08.qs-bitwarden-cli close
 omarchy-shell io.github.elevate08.qs-bitwarden-cli toggle
 
 # Jump straight to a screen
-omarchy-shell io.github.elevate08.qs-bitwarden-cli settings     # -> "settings"
-omarchy-shell io.github.elevate08.qs-bitwarden-cli setup        # -> "setup" (dependency wizard)
+omarchy-shell io.github.elevate08.qs-bitwarden-cli settings     # -> "settings"; "busy" while an SSH approval is in the panel
+omarchy-shell io.github.elevate08.qs-bitwarden-cli setup        # -> "setup" (dependency wizard); "busy" as above
 
 # Lock the vault immediately
 omarchy-shell io.github.elevate08.qs-bitwarden-cli lock         # -> "locked"
@@ -751,6 +766,12 @@ omarchy-shell io.github.elevate08.qs-bitwarden-cli sync         # -> "syncing"
 # Query vault state
 omarchy-shell io.github.elevate08.qs-bitwarden-cli status       # -> "unlocked" | "locked" | "unauthenticated"
 
+# Non-secret authentication state: which methods are ready, whether an unlock or prompt is in progress
+omarchy-shell io.github.elevate08.qs-bitwarden-cli desktopState
+
+# Non-secret SSH agent state: helper and checksum verdict, routing, cooldown, grant count
+omarchy-shell io.github.elevate08.qs-bitwarden-cli sshAgentStatus
+
 # Which vault the bars share, and which monitor presents it (non-secret)
 omarchy-shell io.github.elevate08.qs-bitwarden-cli vaultHost    # -> {"host":"shared","views":2,"presenter":"DP-1",...}
 
@@ -761,6 +782,7 @@ omarchy-shell io.github.elevate08.qs-bitwarden-cli switchAccount work@example.co
 ```
 
 `open`, `close` and `toggle` return nothing; the rest echo the state they moved to.
+`open` and `toggle` show the panel without cancelling a pinentry or resetting the in-flight unlock guard; `close` abandons authentication state -- a pending secret entry, PIN or fingerprint setup, a second-factor login, and attachment downloads. No IPC call unlocks, reads an item or changes a setting.
 `autoType` answers whether typing started, not whether it worked: `wtype` is
 still typing when it returns, and a failure is shown in the panel, or as a
 desktop notification when the panel is closed.

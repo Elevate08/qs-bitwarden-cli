@@ -135,9 +135,8 @@ jobs:
             echo "::notice::the helpers drifted; helper-rebuild.yml commits the rebuilt bytes to this branch"
           fi
           if [ "$IS_FORK" = "true" ]; then
-            echo "::warning::the tracked binary does not match this source. A fork cannot"
-            echo "::warning::push CI's bytes, so this is reported rather than blocking."
-            echo "::warning::A maintainer must commit the uploaded candidate before merge."
+            echo "::notice::the tracked binary does not match this source; the candidate is uploaded,"
+            echo "::notice::but a fork cannot receive CI's commit, so this check fails after the upload."
           fi
 
       - name: Report what was produced
@@ -170,16 +169,21 @@ jobs:
           retention-days: 7
 
       - name: Fail if the tracked binary drifted
-        # After the upload, so the fix is always available. Forks are exempt
-        # (they cannot receive CI's commit), as are PRs helper-rebuild.yml
-        # fixes; tags and branch pushes always fail on drift.
+        # After the upload, so the fix is always available. PRs helper-rebuild.yml
+        # fixes are still exempt (its commit re-runs this workflow); forks and
+        # every other push/tag fail on drift, because a green check would let
+        # unverified bytes merge.
         if: steps.compare.outputs.drift == 'yes'
           && steps.compare.outputs.autofix != 'yes'
-          && github.event.pull_request.head.repo.fork != true
+        env:
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
         run: |
           echo "::error::the tracked binary does not match a clean build of this source."
           echo "::error::Commit the uploaded candidate: it is this source, built here."
           echo "::error::The compare step's log names which helper drifted, or is not tracked yet."
+          if [ "$IS_FORK" = "true" ]; then
+            echo "::error::a fork cannot receive CI's commit, so this pull request must add the candidate bytes itself"
+          fi
           exit 1
 
   # The path REVIEWING.md gives reviewers: from a plain host (no container:),
@@ -231,6 +235,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: The pinned image digest is the same everywhere
+        # One digest, not five copies: a workflow-only edit that swaps the
+        # image (same rustc, same Debian release, new glibc/binutils) would
+        # otherwise build with bytes this repository does not pin.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pins="$(grep -rhoE 'rust:[0-9.]+-[a-z]+@sha256:[0-9a-f]{64}' \
+            .github/workflows scripts/build-agent.sh | LC_ALL=C sort -u)"
+          count="$(printf '%s\n' "$pins" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error::the pinned build image digest is not identical everywhere:"
+            printf '  %s\n' $pins
+            exit 1
+          fi
+          echo "pinned image: $pins"
 
       # Each gate runs per Cargo package; no package's checks cover another.
       - name: Formatting

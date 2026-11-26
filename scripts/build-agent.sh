@@ -23,6 +23,7 @@
 
 set -o pipefail
 set -u
+set -e
 
 # The pinned build environment; changing it means rebuilding and re-summing
 # every binary in the same commit. By digest, not tag: the tag is rebuilt on
@@ -175,14 +176,15 @@ in_pinned_environment() {
   [ -n "$pinned" ] && [ "$pinned" = "$actual" ] \
     || fail "this environment claims to be the pinned one but carries rustc ${actual:-unknown}, not $pinned"
 
-  # The right rustc is not enough: also require the image's Debian bookworm,
+  # The right rustc is not enough: also require the image's Debian version,
   # since glibc and binutils are what the image pins.
-  local os_id os_codename
+  local os_id os_codename os_version
   os_id="$(. /etc/os-release 2>/dev/null && printf '%s' "${ID:-}")"
   os_codename="$(. /etc/os-release 2>/dev/null && printf '%s' "${VERSION_CODENAME:-}")"
-  [ "$os_id" = "debian" ] && [ "$os_codename" = "bookworm" ] \
-    || fail "this environment claims to be the pinned one but is ${os_id:-unknown}/${os_codename:-unknown},
-       not debian/bookworm. The image pins glibc and binutils, not just the compiler."
+  os_version="$(. /etc/os-release 2>/dev/null && printf '%s' "${VERSION_ID:-}")"
+  [ "$os_id" = "debian" ] && [ "$os_codename" = "bookworm" ] && [ "$os_version" = "12" ] \
+    || fail "this environment claims to be the pinned one but is ${os_id:-unknown}/${os_codename:-unknown}/${os_version:-unknown},
+       not debian/bookworm (VERSION_ID 12). The image pins glibc and binutils, not just the compiler."
   return 0
 }
 
@@ -271,7 +273,13 @@ write_sums() {
     && mv "$SUMS_FILE.new" "$SUMS_FILE"
 }
 
-digest() { sha256sum "$1" | cut -d' ' -f1; }
+digest() {
+  [ -f "$1" ] || { note "expected a build output at $1, which does not exist"; return 1; }
+  local sum
+  sum="$(sha256sum -- "$1" | cut -d' ' -f1)" || return 1
+  [ -n "$sum" ] || { note "sha256sum returned nothing for $1"; return 1; }
+  printf '%s\n' "$sum"
+}
 
 # --- modes -----------------------------------------------------------------
 
@@ -305,10 +313,10 @@ verify_reproducible() {
 
   for spec in "${ARTIFACTS[@]}"; do
     name="$(binary_name "$spec")"
-    a="$(digest "$one/$name")"
-    b="$(digest "$two/$name")"
+    a="$(digest "$one/$name")" || fail "the first build did not produce $one/$name"
+    b="$(digest "$two/$name")" || fail "the second build did not produce $two/$name"
     printf '%s\n  path one: %s\n  path two: %s\n' "$name" "$a" "$b"
-    if [ "$a" = "$b" ]; then
+    if [ -n "$a" ] && [ "$a" = "$b" ]; then
       note "$name identical across both paths: $a"
     else
       differ=1
@@ -348,10 +356,14 @@ compare_tracked() {
   for spec in "${ARTIFACTS[@]}"; do
     name="$(binary_name "$spec")"
     committed="$OUTPUT_DIR/$name"
-    fresh="$(digest "$built/$name")"
-    if [ -f "$committed" ]; then have="$(digest "$committed")"; else have="(not tracked)"; fi
+    fresh="$(digest "$built/$name")" || fail "the comparison build did not produce $built/$name"
+    if [ -f "$committed" ]; then
+      have="$(digest "$committed")" || fail "could not read $committed"
+    else
+      have="(not tracked)"
+    fi
     printf '%s\n  tracked: %s\n  fresh:   %s\n' "$name" "$have" "$fresh"
-    [ "$have" = "$fresh" ] || drifted="$drifted bin/$OUTPUT_ARCH/$name"
+    [ -n "$fresh" ] && [ "$have" = "$fresh" ] || drifted="$drifted bin/$OUTPUT_ARCH/$name"
   done
   [ -z "$drifted" ] || fail "does not match a build of this source:$drifted"
   note "every tracked binary matches this source"
@@ -412,12 +424,16 @@ ci_build() {
 
   for spec in "${ARTIFACTS[@]}"; do
     name="$(binary_name "$spec")"
-    a="$(digest "$one/$name")"
-    b="$(digest "$two/$name")"
-    if [ -f "$OUTPUT_DIR/$name" ]; then have="$(digest "$OUTPUT_DIR/$name")"; else have="(not tracked)"; fi
+    a="$(digest "$one/$name")" || fail "the first build did not produce $one/$name"
+    b="$(digest "$two/$name")" || fail "the second build did not produce $two/$name"
+    if [ -f "$OUTPUT_DIR/$name" ]; then
+      have="$(digest "$OUTPUT_DIR/$name")" || fail "could not read $OUTPUT_DIR/$name"
+    else
+      have="(not tracked)"
+    fi
     printf '%s\n  path one: %s\n  path two: %s\n  tracked:  %s\n' "$name" "$a" "$b" "$have"
-    [ "$a" = "$b" ] || differ=1
-    [ "$have" = "$a" ] || drifted="$drifted bin/$OUTPUT_ARCH/$name"
+    [ -n "$a" ] && [ "$a" = "$b" ] || differ=1
+    [ -n "$a" ] && [ "$have" = "$a" ] || drifted="$drifted bin/$OUTPUT_ARCH/$name"
   done
   [ "$differ" -eq 0 ] || fail "the two builds differ, so something in the build path reached a binary"
   note "every helper is identical across both paths"

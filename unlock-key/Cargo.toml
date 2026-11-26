@@ -33,9 +33,11 @@ getrandom = { version = "0.2", default-features = false }
 base64ct = { version = "1.8", default-features = false, features = ["alloc"] }
 # Every buffer holding the password or a key wipes itself when dropped.
 zeroize = { version = "1.9", default-features = false, features = ["alloc"] }
-# The envelope is JSON; unknown fields are refused.
+# The envelope is JSON; unknown fields are refused. `std` (not just `alloc`) is
+# for `to_writer`, so the JSON goes into a pre-sized Zeroizing buffer rather
+# than a Vec that could reallocate a copy of the fingerprint DEK.
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
-serde_json = { version = "1", default-features = false, features = ["alloc"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
 # RLIMIT_CORE=0 and PR_SET_DUMPABLE=0 before the first secret is read.
 rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
 

@@ -47,4 +47,21 @@ check("Escape and the clear button clear through the service",
 check("closing the panel clears the search",
   /clearSearch\(\)/.test(functionBody(service, "close")), functionBody(service, "close"))
 
+// --- vault-controlled names are drawn escaped (JS-9, UI-6) -------------------
+// Text.PlainText stops markup, not bidi reordering or zero-width characters, so
+// item and attachment names reach the list and detail header through the
+// escaped `displayName` / `displayFileName` copies (ItemData in
+// BitwardenModel.js), never the raw values an edit or a download still needs.
+
+check("the item list draws the escaped name, not the raw one",
+  /text: itemData\.displayName\b/.test(view) && !/text: itemData\.name\b/.test(view),
+  "the list row renders the raw name")
+check("the detail header draws the escaped name too",
+  /root\.vault\.detailItem \? root\.vault\.detailItem\.displayName : "Loading\.\.\."/.test(view)
+    && !/root\.vault\.detailItem\.name\b/.test(view),
+  "the detail title renders the raw name")
+check("the save-recovery label escapes the item name before clipping it",
+  /Model\.clipLabel\(\s*Model\.visibleText\(root\.vault\.failedSave\.name\),\s*24\s*\)/.test(view),
+  "a failed save's name reaches the label raw")
+
 done()

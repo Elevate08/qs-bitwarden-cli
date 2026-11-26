@@ -60,6 +60,12 @@ async fn serve_client(mut stream: UnixStream, events: mpsc::Sender<ClientEvent>)
     let Ok(credentials) = stream.peer_cred() else {
         return;
     };
+    // Socket permissions are the first barrier, but check the peer's uid here
+    // too: identity listings answer without a signing prompt, so a future
+    // directory/socket mistake must not expose even public keys and item names.
+    if !same_euid(credentials.uid()) {
+        return;
+    }
     let Some(pid) = credentials.pid() else { return };
     let Ok(pid) = u32::try_from(pid) else { return };
     let Ok(peer) = PeerContext::capture(credentials.uid(), pid) else {
@@ -182,4 +188,25 @@ async fn write_response(stream: &mut UnixStream, response: Vec<u8>) -> std::io::
         .await
         .map_err(|_| std::io::ErrorKind::TimedOut)??;
     Ok(())
+}
+
+/// `SO_PEERCRED` admission: only a process running as this agent's effective
+/// user may be served at all.
+fn same_euid(uid: u32) -> bool {
+    uid == rustix::process::geteuid().as_raw()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_euid;
+
+    #[test]
+    fn only_the_effective_uid_is_admitted() {
+        let euid = rustix::process::geteuid().as_raw();
+        assert!(same_euid(euid));
+        if let Some(other) = euid.checked_add(1) {
+            assert!(!same_euid(other));
+        }
+        assert!(!same_euid(euid.wrapping_sub(1)));
+    }
 }

@@ -388,7 +388,9 @@ const SSH_CLI_MIN_VERSION = "2025.1.2"
 // the whole `bw list items`; the panel names this release as the fix.
 const SSH_MALFORMED_ITEM_FIX_VERSION = "2026.8.0"
 
-// The new-device verification code: piped to bw by printf, so it reaches no argv.
+// The new-device verification code: copied to a plain shell variable, then
+// piped to bw by printf, so it reaches no argv and no forked shell's
+// /proc/<pid>/environ.
 const DEVICE_CODE_ENV = "QSBW_DEVICE_CODE"
 
 function sessionEnvVar() {
@@ -900,16 +902,27 @@ var DEVICE_VERIFICATION_TIMEOUT_S = 60
 // code from an inquirer prompt and no flag, so the code is piped to stdin
 // (from the env, so it reaches no argv). A pipe still ends: an unexpected
 // second prompt fails with ERR_USE_AFTER_CLOSE instead of hanging, and
-// `timeout` covers a bw that never prompts.
+// `timeout` covers a bw that never prompts. bw reads the code from stdin, so
+// `env -u` drops QSBW_DEVICE_CODE before the long-lived bw starts and keeps
+// it out of /proc/<pid>/environ for the up-to-60s the login may take. The
+// wrapper and the supervisor subshell fork before `command` runs, and the
+// `printf` on the left of the pipe is another fork, so the code is moved into
+// a plain (non-exported) variable at the very start of the outer script
+// (before appDataDirPrelude(), authFifoPrelude() and the supervised fork).
 function deviceVerificationLoginCommand(email, serverUrl, method) {
+  // This prelude is the outer script's, so the exported variable is gone
+  // before any prelude command or fork. It runs before serverConfigPrefix()'s
+  // `&&` is evaluated, so a failed `bw config server` still guards the whole
+  // pipeline and cannot fall through to `bw login`.
+  var devicePrelude = "__qsbw_dev=\"$" + DEVICE_CODE_ENV + "\"; unset " + DEVICE_CODE_ENV + "; "
   var command = serverConfigPrefix(serverUrl)
-  command += "printf '%s\\n' \"$" + DEVICE_CODE_ENV + "\" | "
+  command += "printf '%s\\n' \"$__qsbw_dev\" | "
   // The email stays in argv here too: `bw login` takes it only as an argument.
-  command += "timeout " + DEVICE_VERIFICATION_TIMEOUT_S + "s bw login " + shellQuote(email)
-    + " --passwordfile \"$__auth_fifo\""
+  command += "env -u " + DEVICE_CODE_ENV + " timeout " + DEVICE_VERIFICATION_TIMEOUT_S + "s bw login "
+    + shellQuote(email) + " --passwordfile \"$__auth_fifo\""
   if (isTwoFactorMethod(method)) command += " --method " + String(method)
   command += " --raw | head -c " + MAX_TOKEN_BYTES
-  return supervisedAuthCommand("login", command, appDataDirPrelude())
+  return supervisedAuthCommand("login", command, devicePrelude + appDataDirPrelude())
 }
 
 // stderr then stdout, lower-cased, for matching bw's messages.
@@ -943,13 +956,21 @@ function sanitizeInteractiveStderr(raw, secret) {
   return kept.join(" ").slice(0, 300)
 }
 
+// A standalone 6-8 digit code is a one-time code, not context: redact it even
+// when the caller does not know which code is active (loginDiagnostic is
+// called from branches where it is already gone).
+function redactStandaloneNumericCode(text) {
+  return String(text || "").replace(/(^|[^0-9])([0-9]{6,8})(?![0-9])/g, "$1[code]")
+}
+
 // The shape of a login attempt for the journal, never its content: stdout is
 // counted, stderr is sanitised.
 function loginDiagnostic(stdoutText, stderrText, exitCode, branch) {
   return "exit=" + String(exitCode)
     + " stdout=" + String(stdoutText || "").length + "b"
     + " branch=" + String(branch || "?")
-    + " stderr=" + JSON.stringify(sanitizeInteractiveStderr(stderrText, "").slice(0, 200))
+    + " stderr=" + JSON.stringify(redactStandaloneNumericCode(
+      sanitizeInteractiveStderr(stderrText, "")).slice(0, 200))
 }
 
 function loginCodeIsRequiredChallenge(stdoutText, stderrText) {
@@ -1042,12 +1063,19 @@ function validateServerUrl(raw) {
     return "Server URL must be http or https, not " + scheme + ":"
   }
 
-  // Host is everything up to the first /, ? or #, minus any userinfo.
+  // Host is everything up to the first /, ? or #.
   var rest = url.slice(m[0].length)
-  var host = rest.split(/[\/?#]/)[0]
-  var at = host.lastIndexOf("@")
-  if (at !== -1) host = host.slice(at + 1)
-  host = host.replace(/:\d*$/, "")
+  var authority = rest.split(/[\/?#]/)[0]
+  // Userinfo would reach `bw config server` argv, the registry and bw's own
+  // config. It is a credential, not part of the address; refuse it instead of
+  // silently stripping it.
+  var at = authority.lastIndexOf("@")
+  if (at !== -1) {
+    var namedHost = authority.slice(at + 1).replace(/:\d*$/, "")
+    return "Server URL must not contain a username or password before @; enter just "
+      + (namedHost || "the host") + "."
+  }
+  var host = authority.replace(/:\d*$/, "")
   if (!host) return "Server URL is missing a host name"
 
   if (scheme === "http" && !LOOPBACK_HOST_RE.test(host)) {
@@ -1264,8 +1292,12 @@ function normalizeOpenableUrl(raw) {
   if (!target) return { ok: false, scheme: "" }
   // Browsers treat `\` as `/` in http(s) authorities; refuse the ambiguity.
   if (target.indexOf("\\") !== -1) return { ok: false, scheme: "", reason: "ambiguous" }
-  // One argv element, shown in a notification: no controls, spaces or DEL.
-  if (/[\u0000-\u0020\u007f]/.test(target)) return { ok: false, scheme: "", reason: "ambiguous" }
+  // One argv element, shown in a notification: no controls, spaces, DEL, C1
+  // controls, line/paragraph separators or bidi controls (which reorder what
+  // the notification appears to say).
+  if (/[\u0000-\u0020\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(target)) {
+    return { ok: false, scheme: "", reason: "ambiguous" }
+  }
 
   if (HTTP_URL_RE.test(target)) return { ok: true, url: target }
 
@@ -1285,9 +1317,12 @@ function logoutCommand() {
 // -------------------------------------------------------------------------
 //
 // The copied value reaches wl-copy on stdin, from this env var, and never in
-// argv (/proc/<pid>/cmdline is world-readable). `env -u` drops the variable
-// before wl-copy starts, and `exec` means no shell stays behind holding it in
-// its environment for as long as the copy is served.
+// argv (/proc/<pid>/cmdline is world-readable). The value is copied into a
+// plain (non-exported) shell variable and the exported one is unset before the
+// process substitution runs: the `printf` there is a forked bash, and it would
+// otherwise inherit QSBW_CLIP in its /proc/<pid>/environ. `env -u` drops the
+// variable before wl-copy starts, and `exec` means no shell stays behind
+// holding it in its environment for as long as the copy is served.
 //
 // The timed clear is the copy's own lifetime, not a timer in the shell: wl-copy
 // stays in the foreground under `timeout`, and when it ends the compositor
@@ -1302,21 +1337,29 @@ var CLIPBOARD_SENSITIVE_TYPE = "x-kde-passwordManagerHint"
 
 function clipboardEnvVar() { return CLIPBOARD_ENV }
 
+// Move the value out of the exported environment into a plain shell variable,
+// then drop the exported one. A variable assigned in the shell is not exported
+// by default, so the forked `printf` in the process substitution below sees it
+// without QSBW_CLIP appearing in /proc/<pid>/environ.
+function clipboardValuePrelude() {
+  return "__qsbw_clip=\"$" + CLIPBOARD_ENV + "\"; unset " + CLIPBOARD_ENV + "; "
+}
+
 function clipboardCopyCommand(clearSec) {
   var sec = Math.floor(Number(clearSec))
   var copy = isFinite(sec) && sec > 0
     ? "timeout " + sec + "s wl-copy --foreground --sensitive"
     : "wl-copy --sensitive"
-  return ["bash", "-c", "exec env -u " + CLIPBOARD_ENV + " " + copy
-    + " < <(printf '%s' \"$" + CLIPBOARD_ENV + "\")"]
+  return ["bash", "-c", clipboardValuePrelude() + "exec env -u " + CLIPBOARD_ENV + " " + copy
+    + " < <(printf '%s' \"$__qsbw_clip\")"]
 }
 
 // A non-secret (the auto-type keybinding line) for the user to paste
 // elsewhere: no --sensitive mark, so clipboard history keeps it and a lock
 // leaves it alone, and no timed clear. Same env-var route as a secret.
 function clipboardCopyPlainCommand() {
-  return ["bash", "-c", "exec env -u " + CLIPBOARD_ENV + " wl-copy"
-    + " < <(printf '%s' \"$" + CLIPBOARD_ENV + "\")"]
+  return ["bash", "-c", clipboardValuePrelude() + "exec env -u " + CLIPBOARD_ENV + " wl-copy"
+    + " < <(printf '%s' \"$__qsbw_clip\")"]
 }
 
 // -------------------------------------------------------------------------
@@ -1761,6 +1804,7 @@ var KEYBIND_EXIT_BOUND = 5
 var KEYBIND_EXIT_NOT_LOADED = 6
 var KEYBIND_EXIT_WRITE = 7
 var KEYBIND_EXIT_NOT_OURS = 8
+var KEYBIND_EXIT_SYMLINK = 9
 
 // After a change: reload Hyprland's config (not the monitors) and report its
 // first config errors, if any.
@@ -1775,24 +1819,36 @@ function keybindApplyShell() {
 }
 
 // Appends the comment and the bind line ($2, $1) to bindings.lua, once:
-// refused if a line there already runs the IPC, or if the file is anything
-// but a regular file (a symlink to one is followed, as an editor would). A
-// missing file is created only when hyprland.lua loads it. A blank line
-// separates it from what is there; a last line with no newline gets one.
+// refused if a line there already runs the IPC, if the path is a symlink (a
+// dotfiles link is not something this plugin writes through), or if the file
+// is anything but a regular file. A missing file is created only when
+// hyprland.lua loads it. A blank line separates it from what is there; a last
+// line with no newline gets one. `flock` serialises the check and the append,
+// so two concurrent registrations cannot both pass and append twice.
 function autoTypeKeybindRegisterCommand(chord) {
   var line = autoTypeBindLine(chord)
   if (!line) return []
   var script = "test -n \"${HOME:-}\" || exit " + KEYBIND_EXIT_NO_HOME + "; "
     + "__f=\"$HOME/" + AUTO_TYPE_BINDINGS_REL + "\"; __main=\"$HOME/" + AUTO_TYPE_HYPRLAND_REL + "\"; "
     + "if [ -e \"$__f\" ] || [ -L \"$__f\" ]; then "
+    + "[ ! -L \"$__f\" ] || { echo 'bindings.lua is a symlink; refusing to write through it.' >&2; exit "
+      + KEYBIND_EXIT_SYMLINK + "; }; "
+    + "[ -f \"$__f\" ] && [ -r \"$__f\" ] && [ -w \"$__f\" ] || exit " + KEYBIND_EXIT_FILE + "; "
+    + "else " + hyprlandLoadsBindingsShell() + " || exit " + KEYBIND_EXIT_NOT_LOADED + "; fi; "
+    // Open append (creating a missing file only after it is known to be
+    // loaded) and hold an exclusive lock across grep and append.
+    + "exec 9>>\"$__f\" || exit " + KEYBIND_EXIT_WRITE + "; "
+    + "flock -x -w 5 9 || exit " + KEYBIND_EXIT_WRITE + "; "
+    + "[ ! -L \"$__f\" ] || { echo 'bindings.lua is a symlink; refusing to write through it.' >&2; exit "
+      + KEYBIND_EXIT_SYMLINK + "; }; "
     + "[ -f \"$__f\" ] && [ -r \"$__f\" ] && [ -w \"$__f\" ] || exit " + KEYBIND_EXIT_FILE + "; "
     + "if grep -v '^[[:space:]]*--' -- \"$__f\" | grep -Eq "
     + shellQuote("io\\.github\\.elevate08\\.qs-bitwarden-cli[[:space:]]+autoType([^A-Za-z0-9_]|$)")
     + "; then exit " + KEYBIND_EXIT_BOUND + "; fi; "
-    + "else " + hyprlandLoadsBindingsShell() + " || exit " + KEYBIND_EXIT_NOT_LOADED + "; fi; "
     + "__sep=''; if [ -s \"$__f\" ]; then __sep='\\n'; "
     + "[ -z \"$(tail -c 1 -- \"$__f\")\" ] || __sep='\\n\\n'; fi; "
-    + "printf '%b%s\\n%s\\n' \"$__sep\" \"$2\" \"$1\" >> \"$__f\" || exit " + KEYBIND_EXIT_WRITE + "; "
+    + "printf '%b%s\\n%s\\n' \"$__sep\" \"$2\" \"$1\" >&9 || exit " + KEYBIND_EXIT_WRITE + "; "
+    + "exec 9>&-; "
     + "echo appended; "
     + keybindApplyShell()
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES), "qsbw-keybind", line, AUTO_TYPE_BIND_COMMENT]
@@ -1838,6 +1894,9 @@ function parseAutoTypeKeybindResult(exitCode, stdout, chord) {
     message: where + " does not exist and your hyprland.lua does not load it, so it was not created. "
       + "Copy the line and add it where your bindings live." }
   failures[KEYBIND_EXIT_WRITE] = { code: "WRITE", message: "Could not write " + where + "." }
+  failures[KEYBIND_EXIT_SYMLINK] = { code: "SYMLINK",
+    message: where + " is a symlink, so this plugin will not write through it. "
+      + "Change or add the binding in the file it points to yourself." }
   failures[KEYBIND_EXIT_NOT_OURS] = { code: "NOT_OURS",
     message: "The line this plugin added is no longer there exactly as written, so nothing was removed. "
       + "Edit " + where + " yourself." }
@@ -2826,6 +2885,23 @@ function unlockEnvelopeUpdateCommand(tool, account, op) {
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
+// Deletes the slot's envelope only if it still belongs to `account`. A slot
+// can be reused by another account between the operation that wrote the
+// envelope and its cleanup, and a plain delete would then take the new
+// account's envelope. Absent is the state wanted (exit 0); another account's
+// envelope is left untouched (exit 6).
+function unlockEnvelopeDeleteForAccountCommand(tool, account) {
+  if (!envelopeArgsOk(tool, account)) return envelopeRefused()
+  var script = envelopePrelude(tool, account.slot)
+    + "__sealed=\"$(__lookup)\"; [ -n \"$__sealed\" ] || exit 0; "
+    + "__summary=\"$(__unseal \"$__sealed\" | \"$__tool\" inspect)\" || exit " + ENVELOPE_EXIT.unseal + "; "
+    + "printf '%s' \"$__summary\" | jq -e "
+    + "'.account.id == $ENV." + ENVELOPE_ACCOUNT_ID_ENV
+    + " and .account.server == $ENV." + ENVELOPE_SERVER_ENV + "' >/dev/null || exit 6; "
+    + keyringClearEntryScript(keyringEntryName(KEYRING_ENVELOPE, account.slot)) + " || exit 1; exit 0"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
 // Run at every start, ahead of other envelope work: undoes what __seal()
 // stored before it joined its lines (see there).
 //  1. An envelope the keyring still serves with a line break in it is stored
@@ -2903,8 +2979,9 @@ function repairedKeyringNoticeCommand() {
 // fingerprint off deletes the envelope of every account that has the wrap,
 // PIN and FIDO2 ways in included; the next unlock with the master password
 // stores the password again under a new key. An envelope without the wrap is
-// left alone, and a wrap removed for any other reason (a setup that was
-// cancelled as its wrap landed) is a plain `remove`.
+// left alone, and a fingerprint wrap removed for any other reason (a setup
+// that was cancelled as its wrap landed) deletes the envelope too, never just
+// the wrap: the tool refuses a wrap-only fingerprint removal.
 
 // The legacy keyring entry each method used before the envelope.
 var LEGACY_ENTRY_FOR_METHOD = { pin: KEYRING_PIN, fingerprint: KEYRING_MASTER, fido: KEYRING_FIDO }
@@ -2913,8 +2990,8 @@ var MAX_PURGE_ROUNDS = 17
 
 // One slot: remove `method` until none is left (fingerprint: delete the
 // envelope). Exits 0 when there is no envelope or nothing to remove; the
-// account the envelope names is checked against itself after each write
-// (remove needs no account arguments).
+// account the envelope names is passed to `remove` (which requires it) and
+// checked again after each write.
 function envelopeMethodPurgeScript(tool, slot, method) {
   var present = method === "pin" ? ".pin != null"
     : (method === "fingerprint" ? ".fingerprint == true" : "(.fido | length) > 0")
@@ -2944,9 +3021,9 @@ function envelopeMethodPurgeScript(tool, slot, method) {
     if (method === "fido") {
       script += "__c=\"$(printf '%s' \"$__summary\" | jq -r '.fido[0].cred // empty')\"; "
         + "case \"$__c\" in ''|*[!A-Za-z0-9+/=]*) exit 4 ;; esac; "
-        + "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method fido --cred \"$__c\" | __seal)\" || exit $?; "
+        + "__new=\"$(__unseal \"$__sealed\" | " + ENVELOPE_ACCOUNT_ID_ENV + "=\"$__id\" " + ENVELOPE_SERVER_ENV + "=\"$__server\" \"$__tool\" remove --method fido --cred \"$__c\" | __seal)\" || exit $?; "
     } else {
-      script += "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method " + method + " | __seal)\" || exit $?; "
+      script += "__new=\"$(__unseal \"$__sealed\" | " + ENVELOPE_ACCOUNT_ID_ENV + "=\"$__id\" " + ENVELOPE_SERVER_ENV + "=\"$__server\" \"$__tool\" remove --method " + method + " | __seal)\" || exit $?; "
     }
     script += "__verify_account \"$__id\" \"$__server\"; __store; "
   }
@@ -3089,8 +3166,10 @@ function fidoTargetOk(target) {
     && typeof target.rp === "string" && /^pam:\/\/[A-Za-z0-9.-]+$/.test(target.rp)
 }
 
-// One touch; the hmac-secret for `saltExpr` is exported in FIDO_HMAC_ENV,
-// never as an argument.
+// One touch; the hmac-secret for `saltExpr` stays in the shell variable
+// __hmac, never exported. A caller passes it to exactly the single command
+// that consumes it (fidoHmacCommand), so the rest of the pipeline and
+// /proc/<bash>/environ do not carry it, and it never reaches argv.
 function fidoAssertScript(target, saltExpr) {
   return "__cdh=\"$(head -c 32 /dev/urandom | base64 -w0)\"; "
     + "__out=\"$(printf '%s\\n%s\\n%s\\n%s\\n' \"$__cdh\" " + shellQuote(target.rp) + " "
@@ -3098,7 +3177,16 @@ function fidoAssertScript(target, saltExpr) {
     + shellQuote(target.device) + " 2>/dev/null)\" || exit " + FIDO_EXIT.assert + "; "
     + "__hmac=\"$(printf '%s\\n' \"$__out\" | sed -n 5p)\"; unset __out; "
     + "[ -n \"$__hmac\" ] || exit " + FIDO_EXIT.noSecret + "; "
-    + "export " + FIDO_HMAC_ENV + "=\"$__hmac\"; unset __hmac; "
+}
+
+// The hmac is in the environment of this one nested command only.
+function fidoHmacCommand(cmd) {
+  return FIDO_HMAC_ENV + "=\"$__hmac\" " + nestedScript(cmd)
+}
+
+// No later command, and no later /proc/<bash>/environ read, sees it.
+function fidoClearHmacScript() {
+  return "unset __hmac; unset " + FIDO_HMAC_ENV + "; "
 }
 
 function fidoNewSaltScript() {
@@ -3110,7 +3198,8 @@ function fidoUnlockCommand(tool, account, target) {
   if (!envelopeArgsOk(tool, account) || !fidoTargetOk(target)
       || !ENVELOPE_BASE64_RE.test(String(target.salt || ""))) return envelopeRefused()
   var script = fidoAssertScript(target, shellQuote(target.salt))
-    + nestedScript(unlockEnvelopeOpenCommand(tool, account, { kind: "fido", cred: target.cred }))
+    + fidoHmacCommand(unlockEnvelopeOpenCommand(tool, account, { kind: "fido", cred: target.cred }))
+    + "; __rc=$?; " + fidoClearHmacScript() + "exit $__rc"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
@@ -3119,8 +3208,9 @@ function fidoUnlockCommand(tool, account, target) {
 function fidoEnrollCommand(tool, account, target) {
   if (!envelopeArgsOk(tool, account) || !fidoTargetOk(target)) return envelopeRefused()
   var script = fidoNewSaltScript() + fidoAssertScript(target, "\"$" + FIDO_SALT_ENV + "\"")
-    + nestedScript(unlockEnvelopeUpdateCommand(tool, account,
+    + fidoHmacCommand(unlockEnvelopeUpdateCommand(tool, account,
       { kind: "add-fido", cred: target.cred, rp: target.rp, saltFromEnv: true }))
+    + "; __rc=$?; " + fidoClearHmacScript() + "exit $__rc"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
@@ -3135,9 +3225,10 @@ function fidoLegacyUnlockCommand(tool, account, target) {
     + "[ -n \"$__pw\" ] || exit " + LEGACY_MIGRATION_EXIT.none + "; "
     + fidoNewSaltScript() + fidoAssertScript(target, "\"$" + FIDO_SALT_ENV + "\"")
     + "export " + KEYRING_SECRET_ENV + "=\"$__pw\"; "
-    + "if " + nestedScript(migrate) + " >/dev/null; then "
-    + nestedScript(unlockEnvelopeOpenCommand(tool, account, { kind: "fido", cred: target.cred }))
+    + "if " + fidoHmacCommand(migrate) + " >/dev/null; then "
+    + fidoHmacCommand(unlockEnvelopeOpenCommand(tool, account, { kind: "fido", cred: target.cred }))
     + " && exit 0; fi; "
+    + fidoClearHmacScript()
     + "printf '%s' \"$__pw\"; exit " + FIDO_EXIT.legacyUsed
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
@@ -3289,6 +3380,11 @@ function itemTypeLabel(type) {
 // Array.isArray() is false, so lists are duck-typed by length. Capped, since
 // the length is the server's claim ({"length": 2e8} would take down the shell).
 var MAX_LIST_ENTRIES = 4096
+// The list read is capped at 16 MB, but a 16 MB array of tiny objects can still
+// hold far more rows than a real vault. A row is parsed into dozens of fields,
+// so the row count itself needs a ceiling; the 5000-item stress fixture stays
+// well below it.
+var MAX_ITEM_ROWS = 20000
 
 function toList(value) {
   if (Array.isArray(value)) {
@@ -3309,9 +3405,13 @@ function parseAttachments(raw) {
   for (var i = 0; i < list.length; i++) {
     var a = list[i]
     if (!a || !a.id) continue
+    var fileName = String(a.fileName || "") || "attachment"
     out.push({
       id: String(a.id),
-      fileName: String(a.fileName || "") || "attachment",
+      fileName: fileName,
+      // For rendering only: `fileName` is the real stored name (download path,
+      // deduplication), the display copy escapes bidi/zero-width characters.
+      displayFileName: visibleText(fileName),
       size: String(a.size || ""),
       sizeName: String(a.sizeName || "") || formatAttachmentSize(a.size)
     })
@@ -3340,11 +3440,13 @@ function formatAttachmentSize(bytes) {
 
 // Vault file names are untrusted: reduce to an inert basename. Separators and
 // control characters are replaced (not stripped, so nothing re-joins into a
-// traversal) and leading dots/dashes removed.
+// traversal), bidi/format/zero-width characters are removed with the same
+// policy used for SSH prompts, and leading dots/dashes removed.
 function safeAttachmentFileName(raw) {
   var name = String(raw || "")
   name = name.replace(/^.*[\\/]/, "")               // best-effort basename
   name = name.replace(/[\x00-\x1f\x7f\\/]/g, "_")   // the part that guarantees it
+  name = stripInvisibleChars(name)                  // bidi, zero-width, tags
   name = name.replace(/^[\s.\-]+/, "").replace(/\s+$/, "")
   if (name.length > 128) {
     var ext = ""
@@ -3552,7 +3654,11 @@ var OPEN_LINK_SCRIPT = [
   "const target = process.env." + OPEN_PATH_ENV + " || \"\";",
   "if (target.charAt(0) !== \"/\" || target.indexOf(\"\\0\") !== -1) process.exit(1);",
   "const base = target.slice(target.lastIndexOf(\"/\") + 1), dot = base.lastIndexOf(\".\");",
-  "const ext = dot > 0 && /^\\.[A-Za-z0-9]{1,10}$/.test(base.slice(dot)) ? base.slice(dot) : \"\";",
+  "const rawExt = dot > 0 && /^\\.[A-Za-z0-9]{1,10}$/.test(base.slice(dot)) ? base.slice(dot) : \"\";",
+  // Vault-controlled extensions that name a program, script, markup or
+  // desktop entry are dropped: the link keeps a neutral name so opening it
+  // cannot pass for launching one of those.
+  "const ext = /^\\.(?:desktop|directory|sh|bash|zsh|fish|ksh|csh|html?|xhtml|svg|js|mjs|py|pl|rb|php|bat|cmd|com|exe|msi|scr|ps1|vbs|vbe|jar|appimage|run|lnk|url|hta)$/i.test(rawExt) ? \"\" : rawExt;",
   "const link = fs.mkdtempSync(process.argv[1] + \"/\") + \"/attachment\" + ext;",
   "fs.symlinkSync(target, link);",
   "process.stdout.write(link);"
@@ -3720,7 +3826,8 @@ function repromptValue(value) {
 function parseItems(raw) {
   var arr = Array.isArray(raw) ? raw : parseJsonArray(raw)
   var out = []
-  for (var i = 0; i < arr.length; i++) {
+  var rows = arr.length > MAX_ITEM_ROWS ? MAX_ITEM_ROWS : arr.length
+  for (var i = 0; i < rows; i++) {
     var it = arr[i]
     if (!it || typeof it !== "object") continue
 
@@ -3757,11 +3864,14 @@ function parseItems(raw) {
       subtitle = "Secure Note"
     }
 
+    var itemName = String(it.name || "Untitled")
     out.push({
       id: String(it.id || ""),
       organizationId: it.organizationId ? String(it.organizationId) : null,
       folderId: it.folderId ? String(it.folderId) : null,
-      name: String(it.name || "Untitled"),
+      name: itemName,
+      // Rendering copy of the untrusted name; `name` stays what an edit saves.
+      displayName: visibleText(itemName),
       type: itemTypeName(it.type),
       typeCode: Number(it.type || 1),
       favorite: Boolean(it.favorite),
@@ -3819,7 +3929,8 @@ function parseSshKeys(keys) {
       sshKey: { publicKey: publicKey, fingerprint: fingerprint }
     }
     out.push({ id: String(it.id), organizationId: raw.organizationId, folderId: raw.folderId,
-      name: raw.name, type: "sshKey", typeCode: 5, favorite: raw.favorite,
+      name: raw.name, displayName: visibleText(raw.name),
+      type: "sshKey", typeCode: 5, favorite: raw.favorite,
       username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "",
       uris: [], reprompt: raw.reprompt, attachments: [], hasAttachments: false,
       subtitle: fingerprint || publicKey || "SSH Key", notes: "",
@@ -3943,8 +4054,9 @@ function itemDetailFromObject(it) {
 
   if (Number(it.type) === 5) {
     var sshKey = it.sshKey || {}
+    var sshName = String(it.name || "Untitled")
     return { id: String(it.id || ""), organizationId: it.organizationId ? String(it.organizationId) : null,
-      folderId: it.folderId ? String(it.folderId) : null, name: String(it.name || "Untitled"),
+      folderId: it.folderId ? String(it.folderId) : null, name: sshName, displayName: visibleText(sshName),
       type: "sshKey", typeCode: 5, favorite: Boolean(it.favorite), notes: "",
       username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "", uris: [],
       reprompt: repromptValue(it.reprompt), attachments: [],
@@ -3956,12 +4068,14 @@ function itemDetailFromObject(it) {
   var login = it.login || {}
   var uris = loginUris(login)
   var attachments = parseAttachments(it.attachments)
+  var itemName = String(it.name || "Untitled")
 
   return {
     id: String(it.id || ""),
     organizationId: it.organizationId ? String(it.organizationId) : null,
     folderId: it.folderId ? String(it.folderId) : null,
-    name: String(it.name || "Untitled"),
+    name: itemName,
+    displayName: visibleText(itemName),
     type: itemTypeName(it.type),
     typeCode: Number(it.type || 1),
     favorite: Boolean(it.favorite),
@@ -4022,11 +4136,13 @@ function publicItemDetail(src) {
       linkedId: f.linkedId, sensitive: f.sensitive, index: f.index }
   })
   var attachments = toList(src.attachments)
+  var publicName = String(src.name || "Untitled")
   return {
     id: String(src.id || ""),
     organizationId: src.organizationId ? String(src.organizationId) : null,
     folderId: src.folderId ? String(src.folderId) : null,
-    name: String(src.name || "Untitled"),
+    name: publicName,
+    displayName: visibleText(publicName),
     type: src.type,
     typeCode: Number(src.typeCode || 1),
     favorite: Boolean(src.favorite),
@@ -6081,9 +6197,14 @@ function helperInspectCommand(pluginDir, spec) {
     + "  __machine=\"$(od -An -tx1 -j 18 -N 1 -- \"$__bin\" 2>/dev/null | tr -d ' \\n')\"; "
     + "  [ -z \"$__elf\" ] || [ \"$__machine\" = \"$__elf\" ] || { __state=wrong-architecture; continue; }; "
     // Shipped artifact only, and only its own SHA256SUMS line, so one stale
-    // helper cannot disable the other. A missing line is a mismatch.
+    // helper cannot disable the other. A missing line is a mismatch. A
+    // missing SHA256SUMS file is its own state: the shipped helper cannot be
+    // verified at all, rather than being silently "unchecked".
     + "  __checksum=unchecked; "
-    + "  if [ \"$__source\" = bundled ] && [ -f \"$__root/" + SSH_AGENT_SUMS_RELATIVE + "\" ]; then "
+    + "  if [ \"$__source\" = bundled ]; then "
+    + "    if [ ! -f \"$__root/" + SSH_AGENT_SUMS_RELATIVE + "\" ]; then "
+    + "      __checksum=missing; __state=checksum-missing; continue; "
+    + "    fi; "
     + "    __line=\"$(grep -E \"$__sums_line\" \"$__root/" + SSH_AGENT_SUMS_RELATIVE + "\" | head -1)\"; "
     + "    if [ -n \"$__line\" ] && ( cd \"$__root/bin\" && printf '%s\\n' \"$__line\" | sha256sum -c --status ) 2>/dev/null; then "
     + "      __checksum=match; "
@@ -6163,6 +6284,8 @@ function helperMessages(noun, manifest, protocolMismatch) {
       + "`cargo build --manifest-path " + manifest + " --locked`.",
     "checksum-mismatch": the + " does not match its recorded checksum. That usually "
       + "means a stale binary after an update, or an incomplete clone.",
+    "checksum-missing": the + " cannot be verified because bin/SHA256SUMS is missing. "
+      + "Reinstall the plugin so the shipped helper and its recorded checksum arrive together.",
     "no-version": the + " did not report a usable version.",
     "self-test-failed": the + " failed its own self-test on this machine.",
     "protocol-mismatch": the + " " + protocolMismatch + " than this version of the plugin. "
@@ -6520,18 +6643,35 @@ var SSH_AGENT_MAX_PATH_CHARS = 512
 function sshAgentRequestDeadlineMs() { return SSH_AGENT_REQUEST_DEADLINE_MS }
 
 // Characters that draw as nothing or change how their neighbours are drawn:
-// C0 and C1 controls, line and paragraph separators, zero-width and direction
-// marks, bidi embeddings and isolates, and the byte order mark. A process path
-// or a key's name containing one can pass for something else on a prompt.
-var SSH_AGENT_INVISIBLE_RE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g
+// C0 and C1 controls, soft hyphen, Arabic letter mark, Mongolian vowel
+// separator, line and paragraph separators, zero-width, direction and word
+// joiner marks, bidi embeddings and isolates, variation selectors, the byte
+// order mark, and the Unicode tag block (U+E0000-U+E007F, a surrogate pair in
+// UTF-16). A process path or a name containing one can pass for something else
+// on a prompt, or hide part of itself.
+var SSH_AGENT_INVISIBLE_RE = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufe00-\ufe0f]|\udb40[\udc00-\udc7f]/g
+
+// The code point as \uXXXX (or \uXXXXX / \uXXXXXX above the BMP): a tag
+// character is one surrogate pair, not two escapes.
+function invisibleCodePointText(c) {
+  var cp = typeof c.codePointAt === "function" ? c.codePointAt(0) : c.charCodeAt(0)
+  var hex = cp.toString(16)
+  while (hex.length < 4) hex = "0" + hex
+  return "\\u" + hex
+}
 
 // `value` as text, with each of those written out as \uXXXX so the prompt
 // shows them.
 function visibleText(value) {
   var text = (value === undefined || value === null) ? "" : String(value)
-  return text.replace(SSH_AGENT_INVISIBLE_RE, function(c) {
-    return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4)
-  })
+  return text.replace(SSH_AGENT_INVISIBLE_RE, invisibleCodePointText)
+}
+
+// The same set removed rather than escaped, for a stored file name: invisible
+// characters must not survive into a name the user is asked to trust.
+function stripInvisibleChars(value) {
+  var text = (value === undefined || value === null) ? "" : String(value)
+  return text.replace(SSH_AGENT_INVISIBLE_RE, "")
 }
 
 // Escaped first, so the limit bounds what is drawn.

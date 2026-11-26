@@ -32,9 +32,15 @@ dump taken after you revealed something can still contain it.
 
 A password or other secret you copy goes from the helper straight to
 `wl-copy` (with the same timed clear and "sensitive" marking); it never passes
-through the shell. Auto-type, when you turn it on, works the same way: the
-helper reads the armed login's username and password and writes them to
-`wtype`'s stdin, and tells the shell only whether `wtype` typed them. A value
+through the shell. The copy is capped at 1 MiB and reports success once the
+value is written and `wl-copy` has not already failed; a `--foreground` copy
+that is still holding the selection is a success (its timed clear is not part
+of the reply). The write and the wait run off the protocol loop, so a hung
+`wl-copy` cannot hold up `forget`, `kill` or shutdown. Auto-type, when you turn it on,
+works the same way: the helper reads the armed login's username and password
+and writes them to `wtype`'s stdin, and tells the shell only whether `wtype`
+typed them. `wtype` is killed if the helper dies, so a type in progress cannot
+finish after the vault locks. A value
 holding a control character (a newline, tab, backspace, delete or escape,
 which `wtype` would press as keys) is not typed at all. TOTP codes are
 computed in the helper, and only the code
@@ -47,24 +53,48 @@ revealed, copied or edited, and its TOTP code is fetched only when you reveal
 or copy it.
 
 Locking, logging out and switching accounts tell the helper to forget
-everything. A lock that is still running `bw lock` keeps its own copy of the
-key until it finishes.
+everything. Every non-detached run that is still in flight is stopped:
+`SIGTERM` first, then `SIGKILL` after half a second, so no command keeps a
+session key or held password past the lock. Runs that were started with a
+kept `lock<N>` secret survive (`keep` in `forget`): that is the normal
+`bw lock` run, which must finish after the vault state is gone. A lock started
+detached for an unload is not in the run list at all.
 
 ## How the shell talks to it
 
 The shell starts the helper as its own child process and talks to it only on
 the helper's stdin and stdout, one JSON object per line. There is no socket,
-FIFO or port: no other program can connect to it or ask it anything.
+FIFO or port. The helper authenticates no peer: it trusts whatever arrives on
+stdin. The write end of that pipe is held by Quickshell, which this plugin
+does not make non-dumpable, so a process running as you can open it through
+`/proc/<shell>/fd/` and speak the protocol. That is a real same-user exposure
+and more than the IPC target allows (full vault access); it is outside
+`SECURITY.md`'s threat model, which does not provide same-user isolation. The
+future fix is an `AF_UNIX` `SOCK_SEQPACKET` socketpair with `SO_PASSCRED` and
+a peer-PID check.
 
 Every `bw` command the panel runs goes through the helper, which adds
-`BW_SESSION` (or a held password) to that one command's environment. Its
-output is handed back as it is, except:
+`BW_SESSION` (or a held password) to that one command's environment. At
+startup the helper removes the known secret variables (`BW_SESSION`,
+`BW_PASSWORD`, `BW_CLIENTID`, `BW_CLIENTSECRET` and the `QSBW_*` names the
+panel uses) from its own environment, so a child does not inherit one that
+was exported before the shell started; it still inherits the rest of the
+environment (`PATH`, `HOME`, `XDG_*` and so on), and the key is added only for
+the run that asked.
+
+Its output is handed back as it is, except:
 
 - a session key in it (`bw unlock`, `bw login`, a remembered session) is kept
-  by the helper and replaced by a placeholder;
+  by the helper and replaced by a placeholder. A key printed on stderr is
+  scrubbed and kept the same way;
 - the item list and a saved item are kept, and handed back with their
   secrets removed (the shell then asks for one value at a time: `field` to
-  show it, `copyField` to copy it, `item` to edit);
+  show it, `copyField` to copy it, `item` to edit). It forwards only the
+  documented top-level keys (`sshCapability`, `items`, `sshKeys`); `items`
+  must be present and an array, and an unknown top-level key, a non-array
+  `sshKeys`, or a non-object element makes it hand back nothing rather than
+  forward it. SSH records are reduced to their public fields, and a type-3
+  linked field loses its value;
 - the master password a quick-unlock method opens is kept, and the shell gets
   a reference to it;
 - a password or PIN typed into pinentry (below) is kept, and the shell gets
@@ -119,7 +149,9 @@ have your master password typed into the shell.
 
 When pinentry is ended from the panel's side (you open the panel, the vault
 locks, another method unlocks it), the screen that asked is told, and an
-answer pinentry gave just before is forgotten by the helper as well.
+answer pinentry gave just before is forgotten by the helper as well. A named
+secret forgotten while its run is still in flight bumps that name's
+cancellation epoch, so the late answer is refused rather than stored.
 
 Quick-unlock answers that arrive after their authentication surface closes
 are forgotten too. Locking cancels queued authentication opens and rejects
@@ -186,7 +218,9 @@ Before it reads anything, the helper sets its core-file limit to zero (soft
 and hard) and makes itself non-dumpable, so no core is written for it and
 other programs cannot attach to it or read its memory. Buffers holding
 secrets are wiped when dropped; as with the SSH helper, that is best effort
-and cannot cover memory the allocator or the kernel keeps. Neither helper
+and cannot cover memory the allocator or the kernel keeps. Two copies are not
+wiped at all: the environment strings in the `Command` that starts a child,
+and the stdout line buffer between the helper and the shell. Neither helper
 locks its memory, so the session key can be written to swap; encrypted swap,
 or zram with no disk swap, avoids that. Release builds abort on panic rather
 than unwinding.
@@ -198,11 +232,24 @@ not a program a command reaches some other way, over D-Bus for instance.
 
 ## Limits
 
+- **The helper's control channel trusts anything on its stdin.** It
+  authenticates no peer. A process running as you can open the shell's write
+  end of that pipe through `/proc/<shell>/fd/` and send requests, up to
+  reading the session key; see [How the shell talks to it](#how-the-shell-talks-to-it).
+  This is the same-user exposure, not a boundary the plugin claims.
 - **Other programs running as you are not kept out.** `bw` takes the session
   key only in its environment, and Linux lets any process running as the same
   user read another's `/proc/<pid>/environ`, so the key is readable while a
-  `bw` command runs. That was true before the helper and is true of `bw`
-  everywhere; see [SECURITY.md](../SECURITY.md) for what is in scope.
+  `bw` command runs. The same is true of `BW_PASSWORD` and the `QSBW_*`
+  secrets in the panel's own shell during an API-key login and the FIFO
+  writes, and of the FIDO2 hmac described in the README. The FIFO is checked
+  with `[ -p ]` and `[ ! -L ]` and then opened by the shell without
+  `O_NOFOLLOW`, so a same-UID process can win that window. That was true
+  before the helper and is true of `bw` everywhere; see
+  [SECURITY.md](../SECURITY.md) for what is in scope.
+- **`timeout`, `wl-copy` and `wtype` are found on `PATH`.** The helper does
+  not pin their paths, so a writable or earlier `PATH` entry can receive the
+  value. The test harness's stand-in commands show the path.
 - **What is on screen, and what you type, is in the shell.** That is what you
   type into the panel's own fields (the email login, item fields, quick-unlock
   setup, and the master password or PIN when the unlock prompt is not used).
@@ -231,7 +278,8 @@ not a program a command reaches some other way, over D-Bus for instance.
 
 It is checked like the other helpers: the build for this machine's
 processor (`bin/x86_64-linux/` or `bin/aarch64-linux/`), present, executable,
-the right architecture, the checksum in `bin/SHA256SUMS`, its own self-test, and the
+the right architecture, the checksum in `bin/SHA256SUMS` (a missing file is a
+refusal, not an unchecked pass), its own self-test, and the
 protocol version. A locally built one (`vault/target/debug/`) is used if the
 shipped one is absent or unusable.
 
@@ -248,12 +296,13 @@ protection is off and why. That is for a platform the helper is not built
 for (anything but x86_64 and aarch64 Linux), or a source checkout without one.
 
 If the helper stops while the vault is open, the session key goes with it, so
-the vault locks as the lock button would: the SSH agent drops its private keys
-and grants, the remembered session is cleared, and the panel asks you to
-unlock again. The helper is restarted up to three times; the count clears
-once it has stayed up for a minute. If it keeps stopping, the vault stays
-locked and the banner offers to try again. The panel does not move the vault
-into the shell in that case, even with `allowVaultWithoutHelper`.
+the vault locks as the lock button would: `wtype` is killed with the helper,
+so a type in progress stops; the SSH agent drops its private keys and grants,
+the remembered session is cleared, and the panel asks you to unlock again. The
+helper is restarted up to three times; the count clears once it has stayed up
+for a minute. If it keeps stopping, the vault stays locked and the banner
+offers to try again. The panel does not move the vault into the shell in that
+case, even with `allowVaultWithoutHelper`.
 
 ## Verifying the shipped binary
 

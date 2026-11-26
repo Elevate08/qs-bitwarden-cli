@@ -5,7 +5,7 @@ use qs_bitwarden_ssh_agent::control::{
 };
 use qs_bitwarden_ssh_agent::runtime::{RuntimeError, ServiceRuntime};
 use rand_core::{OsRng, RngCore};
-use signature::Verifier;
+use signature::{Signer, Verifier};
 use ssh_encoding::{Decode, Encode};
 use ssh_key::{Algorithm, HashAlg, PrivateKey, Signature};
 use std::fs;
@@ -25,6 +25,7 @@ impl TempDir {
             OsRng.next_u64()
         ));
         fs::create_dir(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         Self(path)
     }
 }
@@ -822,6 +823,35 @@ fn a_key_name_with_invisible_characters_reaches_the_panel_escaped() {
     agent.shutdown();
 }
 
+/// `ssh-add -l` prints the identity comment to a terminal, so the same vault
+/// item name must be escaped there, not just in a panel prompt.
+#[test]
+fn a_key_name_in_an_identity_listing_is_escaped() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let nonce = "0123456789abcdef0123456789abcdef";
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"key_load_begin\",\"epoch\":1,\"loadId\":\"{nonce}\"}}"
+    ));
+    let mut item = disposable_item(&key);
+    item["name"] = serde_json::json!("work\u{1b}]52;c;ZXZpbA==\u{7}prod\u{202e}gnihtemos");
+    agent.write_fifo(&jq_payload(nonce, &[item]));
+    agent.send("{\"v\":1,\"type\":\"key_load_end\",\"epoch\":1,\"status\":\"ok\"}");
+    loop {
+        if agent.read()["type"] == "keys_loaded" {
+            break;
+        }
+    }
+
+    let mut stream = UnixStream::connect(&agent.socket).unwrap();
+    stream.write_all(&[0_u8, 0, 0, 1, 11]).unwrap();
+    assert_eq!(
+        identity_comments(&read_agent_frame(&mut stream)),
+        ["work\\u001b]52;c;ZXZpbA==\\u0007prod\\u202egnihtemos"]
+    );
+    agent.shutdown();
+}
+
 /// Held requests come back in the order they were raised, not in the hash
 /// map's order: the panel pairs the shown prompt with the first approval it
 /// receives, so a stable order is part of the contract. Repeated, since a
@@ -1035,12 +1065,14 @@ fn a_login_grant_covers_only_the_server_it_was_approved_for() {
 
     let socket = agent.socket.clone();
     let blob = public_blob.clone();
+    let github_host = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let other_host = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
     let (proceed, go) = std::sync::mpsc::channel::<()>();
     let client = std::thread::spawn(move || {
-        let log_in_to = |host_key: &[u8], session: u8| {
+        let log_in_to = |host: &PrivateKey, session: u8| {
             let mut stream = UnixStream::connect(&socket).unwrap();
             stream
-                .write_all(&session_bind_to(host_key, &[session; 32], false))
+                .write_all(&signed_session_bind_to(host, &[session; 32], false))
                 .unwrap();
             assert_eq!(read_agent_frame(&mut stream)[4], 6);
             stream
@@ -1051,10 +1083,10 @@ fn a_login_grant_covers_only_the_server_it_was_approved_for() {
                 .unwrap();
             read_agent_frame(&mut stream)
         };
-        let first = log_in_to(b"github host key", 0x31);
-        let again = log_in_to(b"github host key", 0x32);
+        let first = log_in_to(&github_host, 0x31);
+        let again = log_in_to(&github_host, 0x32);
         go.recv().unwrap();
-        let elsewhere = log_in_to(b"another host key", 0x33);
+        let elsewhere = log_in_to(&other_host, 0x33);
         (first, again, elsewhere)
     });
 
@@ -1100,9 +1132,16 @@ fn a_grant_covers_only_the_kind_of_signature_it_was_given_for() {
 
     let socket = agent.socket.clone();
     let blob = public_blob.clone();
+    let login_host = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
     let (proceed, go) = std::sync::mpsc::channel::<()>();
     let client = std::thread::spawn(move || {
         let mut stream = UnixStream::connect(&socket).unwrap();
+        // Name a server for the login below, so it stays a grantable request:
+        // this test is about the grant's kind, not its host.
+        stream
+            .write_all(&signed_session_bind_to(&login_host, &[0x11; 32], false))
+            .unwrap();
+        assert_eq!(read_agent_frame(&mut stream)[4], 6);
         stream
             .write_all(&sign_request_for(&blob, &git_signature_data()))
             .unwrap();
@@ -1210,7 +1249,8 @@ fn a_refused_bind_fails_closed_and_never_rides_a_local_grant() {
     let public_blob = key.public_key().to_bytes().unwrap();
     agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
 
-    const GITHUB: &[u8] = b"github host key";
+    let github_host = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let github = github_host.public_key().to_bytes().unwrap();
     let socket = agent.socket.clone();
     let blob = public_blob.clone();
     let (proceed, go) = std::sync::mpsc::channel::<()>();
@@ -1218,13 +1258,13 @@ fn a_refused_bind_fails_closed_and_never_rides_a_local_grant() {
         // The local `ssh` logs in to the server; approved with a window.
         let mut local = UnixStream::connect(&socket).unwrap();
         local
-            .write_all(&session_bind_to(GITHUB, &[0x41; 32], false))
+            .write_all(&signed_session_bind_to(&github_host, &[0x41; 32], false))
             .unwrap();
         assert_eq!(read_agent_frame(&mut local)[4], 6);
         local
             .write_all(&sign_request_for(
                 &blob,
-                &hostbound_login_in(&[0x41; 32], b"git", &blob, GITHUB),
+                &hostbound_login_in(&[0x41; 32], b"git", &blob, &github),
             ))
             .unwrap();
         let local_signed = read_agent_frame(&mut local);
@@ -1241,7 +1281,7 @@ fn a_refused_bind_fails_closed_and_never_rides_a_local_grant() {
         relayed
             .write_all(&sign_request_for(
                 &blob,
-                &hostbound_login_in(&[0xaa; 32], b"git", &blob, GITHUB),
+                &hostbound_login_in(&[0xaa; 32], b"git", &blob, &github),
             ))
             .unwrap();
         let hostbound = read_agent_frame(&mut relayed);
@@ -1255,7 +1295,7 @@ fn a_refused_bind_fails_closed_and_never_rides_a_local_grant() {
             .unwrap();
         let _ = read_agent_frame(&mut rebound);
         rebound
-            .write_all(&session_bind_to(GITHUB, &[0x44; 32], false))
+            .write_all(&signed_session_bind_to(&github_host, &[0x44; 32], false))
             .unwrap();
         assert_eq!(read_agent_frame(&mut rebound)[4], 6);
         rebound
@@ -1762,6 +1802,30 @@ fn session_bind_to(host_key: &[u8], session_id: &[u8], forwarding: bool) -> Vec<
     host_key.encode(&mut request).unwrap();
     session_id.encode(&mut request).unwrap();
     b"host signature".as_slice().encode(&mut request).unwrap();
+    u8::from(forwarding).encode(&mut request).unwrap();
+    frame(&request)
+}
+
+/// A bind signed by `host`, as a real OpenSSH client sends it: the agent
+/// verifies it before using the host for grant matching.
+fn signed_session_bind_to(host: &PrivateKey, session_id: &[u8], forwarding: bool) -> Vec<u8> {
+    let signature = host.try_sign(session_id).unwrap();
+    let mut request = Vec::new();
+    27_u8.encode(&mut request).unwrap();
+    b"session-bind@openssh.com"
+        .as_slice()
+        .encode(&mut request)
+        .unwrap();
+    host.public_key()
+        .to_bytes()
+        .unwrap()
+        .encode(&mut request)
+        .unwrap();
+    session_id.encode(&mut request).unwrap();
+    Vec::<u8>::try_from(signature)
+        .unwrap()
+        .encode(&mut request)
+        .unwrap();
     u8::from(forwarding).encode(&mut request).unwrap();
     frame(&request)
 }

@@ -1,7 +1,10 @@
 # Publishes the draft release once its tagged commit reaches master, then asks
-# the Omarchy plugin marketplace to verify that commit. Nothing is rebuilt or
-# re-verified: release.yml already did that for this exact commit on the
-# release branch. No other workflow runs on master.
+# the Omarchy plugin marketplace to verify that commit. Nothing is rebuilt:
+# release.yml already built and attested these bytes for this exact commit on
+# the release branch. Before publishing, the draft's assets are matched against
+# the tag's bin/ (hashes and the restricted asset list) and every helper's
+# attestation is re-verified for that commit. No other workflow runs on master
+# except the read-only helper check in master-verify.yml.
 
 name: publish on master
 
@@ -83,6 +86,65 @@ jobs:
               echo "::error::$tag is not an ancestor of master; refusing to publish"
               exit 1
             fi
+            # Re-check what is attached against the tag before making it
+            # public: release.yml built and attested these bytes, but this is
+            # the last point that can see the draft's actual assets. A draft
+            # created or edited by hand, or a partial re-run, must not be
+            # published verbatim.
+            commit="$(git rev-parse "$tag^{commit}")"
+            scratch="$(mktemp -d)"
+            git worktree add --detach "$scratch/tree" "$commit" >/dev/null
+            mkdir "$scratch/assets"
+            gh release download "$tag" --dir "$scratch/assets"
+            has_asset() { [ -f "$scratch/assets/$1" ]; }
+            expected=(SHA256SUMS DEBUG-SYMBOLS.md
+              dependency-licences.json unlock-key-dependency-licences.json vault-dependency-licences.json)
+            for arch in x86_64 aarch64; do
+              expected+=("dependency-tree-$arch-linux.txt"
+                "unlock-key-dependency-tree-$arch-linux.txt"
+                "vault-dependency-tree-$arch-linux.txt")
+              for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
+                expected+=("$name-$arch-linux" "$name-$arch-linux.cdx.json" "$name-$arch-linux.debug.gz")
+              done
+            done
+            for name in $(gh release view "$tag" --json assets --jq '.assets[].name'); do
+              found=0
+              for keep in "${expected[@]}"; do [ "$name" = "$keep" ] && { found=1; break; }; done
+              [ "$found" -eq 1 ] || {
+                echo "::error::$tag has an unexpected asset $name; refusing to publish"
+                exit 1
+              }
+            done
+            for name in "${expected[@]}"; do
+              has_asset "$name" || {
+                echo "::error::$tag is missing expected asset $name; refusing to publish"
+                exit 1
+              }
+            done
+            cmp "$scratch/tree/bin/SHA256SUMS" "$scratch/assets/SHA256SUMS" || {
+              echo "::error::$tag's SHA256SUMS asset is not the tag's bin/SHA256SUMS"
+              exit 1
+            }
+            for arch in x86_64 aarch64; do
+              for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
+                asset="$scratch/assets/$name-$arch-linux"
+                want="$(sha256sum "$scratch/tree/bin/$arch-linux/$name" | cut -d' ' -f1)"
+                have="$(sha256sum "$asset" | cut -d' ' -f1)"
+                [ "$want" = "$have" ] || {
+                  echo "::error::$tag asset $name-$arch-linux does not match bin/$arch-linux/$name"
+                  exit 1
+                }
+                gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY" \
+                  --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+                  --source-digest "$commit" --source-ref "refs/tags/$tag" \
+                  --deny-self-hosted-runners >/dev/null || {
+                  echo "::error::$tag asset $name-$arch-linux has no attestation for this tag's commit"
+                  exit 1
+                }
+              done
+            done
+            git worktree remove --force "$scratch/tree"
+            rm -rf "$scratch"
             gh release edit "$tag" --draft=false
             gh release view "$tag" --json isDraft,url --jq '"published \(.url) (isDraft=\(.isDraft))"'
             published=$((published + 1))

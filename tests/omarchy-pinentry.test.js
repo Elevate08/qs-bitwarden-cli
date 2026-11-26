@@ -57,7 +57,8 @@ setInterval(() => {}, 1000)
 `, { mode: 0o755 })
 
 const baseEnv = Object.assign({}, process.env, {
-  XDG_RUNTIME_DIR: runtime, QSBW_PINENTRY_TEST_UI: fakeUi, FAKE_UI_LOG: uiLog, FAKE_UI_ANSWER: answerFile
+  XDG_RUNTIME_DIR: runtime, QSBW_PINENTRY_ALLOW_TEST_HOOKS: "1",
+  QSBW_PINENTRY_TEST_UI: fakeUi, FAKE_UI_LOG: uiLog, FAKE_UI_ANSWER: answerFile
 })
 
 const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
@@ -187,14 +188,17 @@ check("so is one that closes the socket without a word", /^ERR 83886081 /.test(r
 // --- what a SIGKILL left behind ----------------------------------------------------------
 
 {
-  // Siblings as earlier runs would leave them: one whose pid is gone, one
-  // with no pid in its prompt.json, one whose pid is alive (this test), one
-  // with no prompt.json made long ago, one made just now (another run between
+  // Siblings as earlier runs would leave them, each named exactly as getpin
+  // makes them: qsbw-pinentry-<16 hex>-<6 alphanumerics>. One whose pid is
+  // gone, one with no pid in its prompt.json, one whose pid is alive (this
+  // test), one with no prompt.json made long ago (not ours to delete: only a
+  // prompt.json proves we made it), one made just now (another run between
   // mkdtemp and its write), and a symlink to a directory holding a dead pid,
   // which must not be followed.
   const dead = spawnSync("true").pid
-  const sibling = (name, pid) => {
-    const dir = path.join(runtime, "qsbw-pinentry-" + name)
+  let n = 0
+  const sibling = (tag, pid) => {
+    const dir = path.join(runtime, "qsbw-pinentry-" + (++n).toString(16).padStart(16, "0") + "-" + tag)
     fs.mkdirSync(dir, { mode: 0o700 })
     if (pid !== undefined) fs.writeFileSync(path.join(dir, "prompt.json"), JSON.stringify({ description: "x", pid }), { mode: 0o600 })
     return dir
@@ -208,15 +212,30 @@ check("so is one that closes the socket without a word", /^ERR 83886081 /.test(r
   const target = path.join(scratch, "elsewhere")
   fs.mkdirSync(target, { mode: 0o700 })
   fs.writeFileSync(path.join(target, "prompt.json"), JSON.stringify({ pid: dead }))
-  fs.symlinkSync(target, path.join(runtime, "qsbw-pinentry-LINK01"))
+  const link = path.join(runtime, "qsbw-pinentry-" + "f".repeat(16) + "-LINK01")
+  fs.symlinkSync(target, link)
+  // The UI config directory promptConfig keeps per checkout, with the tree a
+  // live prompt draws from: its name must not read as a prompt directory,
+  // however old it is.
+  const ui = path.join(runtime, "qsbw-pinentry-ui-" + "0123456789ab")
+  fs.mkdirSync(ui, { mode: 0o700 })
+  fs.writeFileSync(path.join(ui, "shell.qml"), "// keep\n", { mode: 0o600 })
+  fs.writeFileSync(path.join(ui, "prompt.json"), JSON.stringify({ pid: dead }), { mode: 0o600 })
+  fs.utimesSync(ui, new Date(Date.now() - 120000), new Date(Date.now() - 120000))
   r = session(ask(), "cancel")
   eq("the next run removes what a killed one left, keeps a live run's and never follows a link",
-    leftovers().sort().join(","), "qsbw-pinentry-LINK01,qsbw-pinentry-LIVE01,qsbw-pinentry-NEW001")
+    leftovers().sort().join(","), [
+      path.basename(link), path.basename(ui), path.basename(live), path.basename(fresh), path.basename(old)
+    ].sort().join(","))
   check("the link's target is untouched", fs.existsSync(path.join(target, "prompt.json")), "")
+  check("an old UI config directory survives the sweep with its shell.qml",
+    fs.readFileSync(path.join(ui, "shell.qml"), "utf8") === "// keep\n", ui)
   check("the prompt file names its pid", /^\d+$/.test(String((uiStarts()[0] || { ask: {} }).ask.pid)), JSON.stringify(uiStarts()[0]))
   fs.rmSync(live, { recursive: true })
   fs.rmSync(fresh, { recursive: true })
-  fs.unlinkSync(path.join(runtime, "qsbw-pinentry-LINK01"))
+  fs.rmSync(old, { recursive: true })
+  fs.rmSync(ui, { recursive: true })
+  fs.unlinkSync(link)
 }
 
 // --- SETERROR on a retry ----------------------------------------------------------------
@@ -276,6 +295,18 @@ function checks() {
   const noUi = Object.assign({}, baseEnv, { QSBW_PINENTRY_TEST_UI: "", WAYLAND_DISPLAY: "" })
   const c = spawnSync(frontend, ["--check"], { env: noUi, encoding: "utf8" })
   check("--check fails without a Wayland display, and says why", c.status === 1 && /Wayland/.test(c.stderr), c.stderr)
+  const noHook = Object.assign({}, baseEnv, { QSBW_PINENTRY_ALLOW_TEST_HOOKS: "", WAYLAND_DISPLAY: "" })
+  const h = spawnSync(frontend, ["--check"], { env: noHook, encoding: "utf8" })
+  check("the test UI hook is ignored without its own opt-in",
+    h.status === 1 && /Wayland/.test(h.stderr), h.stderr)
+  const looseRuntime = path.join(scratch, "loose-runtime")
+  fs.mkdirSync(looseRuntime, { mode: 0o755 })
+  fs.chmodSync(looseRuntime, 0o755)
+  const loose = spawnSync(frontend, ["--check"], {
+    env: Object.assign({}, baseEnv, { XDG_RUNTIME_DIR: looseRuntime }), encoding: "utf8"
+  })
+  check("a group/world-accessible runtime dir is refused",
+    loose.status === 1 && /XDG_RUNTIME_DIR/.test(loose.stderr), loose.stderr)
   const noKit = Object.assign({}, baseEnv, { QSBW_PINENTRY_TEST_UI: "", WAYLAND_DISPLAY: "wayland-x", OMARCHY_SHELL_DIR: path.join(scratch, "nokit") })
   eq("--check fails without the shell kit", spawnSync(frontend, ["--check"], { env: noKit }).status, 1)
   // The card's field is the panel's LineField, never an editable TextInput

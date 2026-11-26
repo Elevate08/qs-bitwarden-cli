@@ -94,7 +94,10 @@ pub const ARGON2_MIN_ITERATIONS: u32 = 3;
 /// envelope written before this floor existed still opens.
 pub const PIN_ARGON2_MIN_MEMORY_KIB: u32 = 256 * 1024;
 pub const PIN_ARGON2_MIN_ITERATIONS: u32 = 4;
-/// Ceilings, so a hostile envelope cannot make `argon2` exhaust the machine.
+/// Ceilings for a hostile envelope's recorded cost. They bound what the panel
+/// is asked to run, but a copied envelope can still sit at the cap (4 GiB,
+/// 64 passes, 16 threads), so running those parameters can exhaust memory and
+/// CPU. The panel only runs parameters it read from the envelope.
 pub const ARGON2_MAX_MEMORY_KIB: u32 = 4 * 1024 * 1024;
 pub const ARGON2_MAX_ITERATIONS: u32 = 64;
 pub const ARGON2_MAX_PARALLELISM: u32 = 16;
@@ -390,9 +393,15 @@ impl Envelope {
     }
 
     pub fn to_json(&self) -> Result<Zeroizing<Vec<u8>>> {
-        serde_json::to_vec(self)
-            .map(Zeroizing::new)
-            .map_err(|_| Error::Internal)
+        // `serde_json::to_vec` grows its buffer, and each reallocation leaves
+        // the old copy (which may hold the fingerprint wrap's DEK base64) in
+        // freed heap where Zeroizing cannot reach it. Measure first, then
+        // write once into a buffer that never needs to grow.
+        let mut length = ByteCount(0);
+        serde_json::to_writer(&mut length, self).map_err(|_| Error::Internal)?;
+        let mut out = Zeroizing::new(Vec::with_capacity(length.0));
+        serde_json::to_writer(&mut *out, self).map_err(|_| Error::Internal)?;
+        Ok(out)
     }
 
     /// Refuse an envelope written for another account or server.
@@ -527,15 +536,13 @@ impl Envelope {
     }
 
     /// Disable one method; needs no secret. `master` cannot be removed.
+    /// A fingerprint wrap is the DEK itself, so removing just it would leave
+    /// the same DEK in `ct` with no method pointing at it; refuse and let the
+    /// caller delete the whole envelope instead.
     pub fn remove(&mut self, method: &Method) -> Result<()> {
         match method {
             Method::Pin => self.wraps.pin.take().map(drop).ok_or(Error::Missing),
-            Method::Fingerprint => self
-                .wraps
-                .fingerprint
-                .take()
-                .map(drop)
-                .ok_or(Error::Missing),
+            Method::Fingerprint => Err(Error::Policy),
             Method::Fido { credential } => {
                 let index = self
                     .wraps
@@ -569,6 +576,21 @@ impl Envelope {
         self.ct = seal(&dek, new_password, &ct_aad(&self.account))?;
         self.wraps.master = password_wrap(&self.account, "master", master, master_key, &dek)?;
         self.stale = false;
+        Ok(())
+    }
+}
+
+/// A write sink that only counts bytes, used to size the JSON before it is
+/// written into its final (never growing) buffer.
+struct ByteCount(usize);
+
+impl std::io::Write for ByteCount {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
@@ -1112,12 +1134,15 @@ mod tests {
         )
         .unwrap();
         env.remove(&Method::Pin).unwrap();
-        env.remove(&Method::Fingerprint).unwrap();
+        // The fingerprint wrap is the DEK; removing only it is refused so no
+        // caller can leave the DEK behind. Deleting the whole envelope is the
+        // only way out.
+        assert_eq!(env.remove(&Method::Fingerprint).unwrap_err(), Error::Policy);
         env.remove(&Method::Fido { credential: CRED }).unwrap();
         assert_eq!(env.remove(&Method::Pin).unwrap_err(), Error::Missing);
         let env = reparse(&env);
         let summary = env.summary();
-        assert!(summary.pin.is_none() && !summary.fingerprint && summary.fido.is_empty());
+        assert!(summary.pin.is_none() && summary.fingerprint && summary.fido.is_empty());
         assert_eq!(
             env.open(&Via::Master(&key(1))).unwrap().as_slice(),
             b"correct horse"
@@ -1253,6 +1278,17 @@ mod tests {
             Envelope::parse(&vec![b' '; MAX_ENVELOPE_BYTES + 1]).unwrap_err(),
             Error::Policy
         );
+    }
+
+    #[test]
+    fn the_json_is_written_once_into_an_exactly_sized_buffer() {
+        let mut env = envelope();
+        env.add_fingerprint(&Via::Master(&key(1))).unwrap();
+        let out = env.to_json().unwrap();
+        // One measurement and one write, into a buffer that never grows: no
+        // reallocation leaves the fingerprint DEK's base64 in freed heap.
+        assert_eq!(out.as_slice(), serde_json::to_vec(&env).unwrap().as_slice());
+        assert_eq!(out.capacity(), out.len());
     }
 
     #[test]

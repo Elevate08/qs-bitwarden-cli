@@ -193,6 +193,38 @@ check("the deferred TOTP restart reserves the Process against a newer direct sta
   panelBodyOf("fetchTotp") + "\n" + panelBodyOf("continueTotpQueue"))
 
 // ---------------------------------------------------------------------------
+// Clipboard: the value's variable does not reach a forked child
+// ---------------------------------------------------------------------------
+//
+// `bash -c` forks the process substitution's `printf` before running the
+// command. Copying QSBW_CLIP into a plain shell variable and unsetting the
+// exported one keeps the value out of that child's /proc/<pid>/environ.
+
+{
+  const commands = [
+    ["timed", Model.clipboardCopyCommand(30)],
+    ["untimed", Model.clipboardCopyCommand(0)],
+    ["plain", Model.clipboardCopyPlainCommand()],
+  ]
+  for (const [label, command] of commands) {
+    const script = command[2]
+    const envVar = Model.clipboardEnvVar()
+    const unsetAt = script.indexOf("unset " + envVar)
+    const forkAt = script.indexOf("< <(printf")
+    check(`the ${label} copy unsets the exported variable before the printf forks`,
+      script.indexOf('__qsbw_clip="$' + envVar + '"') !== -1
+        && unsetAt !== -1 && forkAt !== -1 && unsetAt < forkAt,
+      script)
+    check(`the ${label} copy still feeds printf from the copied value`,
+      script.includes("printf '%s' \"$__qsbw_clip\""),
+      script)
+    check(`the ${label} copy keeps env -u in front of wl-copy`,
+      script.includes("exec env -u " + envVar + " "),
+      script)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Generator request bounds
 // ---------------------------------------------------------------------------
 

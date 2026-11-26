@@ -1,9 +1,11 @@
 use qs_bitwarden_ssh_agent::approvals::{ApprovalError, ApprovalManager, SignScope, Submit};
 use qs_bitwarden_ssh_agent::keystore::{CandidateItem, KeyStore};
 use qs_bitwarden_ssh_agent::peer::PeerContext;
-use qs_bitwarden_ssh_agent::protocol::SignKind;
+use qs_bitwarden_ssh_agent::protocol::{classify_sign, decode_request, AgentRequest, SignKind};
 use rand_core::OsRng;
-use ssh_key::{Algorithm, HashAlg, PrivateKey};
+use signature::Signer;
+use ssh_encoding::Encode;
+use ssh_key::{Algorithm, HashAlg, PrivateKey, Signature};
 use zeroize::Zeroizing;
 
 fn peer(pid: u32, start: u64, executable: &str) -> PeerContext {
@@ -22,6 +24,41 @@ fn scope(kind: SignKind) -> SignScope {
         kind,
         forwarded: false,
     }
+}
+
+fn string(value: &[u8], out: &mut Vec<u8>) {
+    value.encode(out).unwrap();
+}
+
+fn frame(payload: &[u8]) -> Vec<u8> {
+    let mut framed = u32::try_from(payload.len()).unwrap().to_be_bytes().to_vec();
+    framed.extend_from_slice(payload);
+    framed
+}
+
+/// A `session-bind@openssh.com` frame carrying `signature` over `session_id`.
+fn session_bind(host: &PrivateKey, session_id: &[u8], signature: &[u8]) -> Vec<u8> {
+    let mut payload = vec![27];
+    string(b"session-bind@openssh.com", &mut payload);
+    string(&host.public_key().to_bytes().unwrap(), &mut payload);
+    string(session_id, &mut payload);
+    string(signature, &mut payload);
+    payload.push(0);
+    frame(&payload)
+}
+
+/// The data an SSH client signs to log in as `user` on `session_id`.
+fn login_message(session_id: &[u8], user: &[u8], key: &[u8]) -> Vec<u8> {
+    let mut data = Vec::new();
+    string(session_id, &mut data);
+    data.push(50);
+    string(user, &mut data);
+    string(b"ssh-connection", &mut data);
+    string(b"publickey", &mut data);
+    data.push(1);
+    string(b"ssh-ed25519", &mut data);
+    string(key, &mut data);
+    data
 }
 
 fn loaded_store(epoch: u64) -> (KeyStore, Vec<u8>) {
@@ -357,6 +394,77 @@ fn a_grant_is_scoped_to_what_it_signed() {
                 Ok(Submit::Pending(_))
             ),
             "{elsewhere:?} must not ride a grant for another host"
+        );
+    }
+}
+
+/// A connection whose bind did not verify, or that reported no bind at all,
+/// names no server. A login on it must not become a grant: approving one would
+/// cover every later unreported login as that user from the same program.
+#[test]
+fn an_unverified_bind_cannot_open_a_login_grant() {
+    let host = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let session_id = [7_u8; 32];
+    let wrong: Signature = host.try_sign(b"a different session").unwrap();
+    let unverified_bind = session_bind(&host, &session_id, &Vec::<u8>::try_from(wrong).unwrap());
+    let AgentRequest::SessionBind {
+        forwarding,
+        binding,
+    } = decode_request(&unverified_bind).unwrap()
+    else {
+        panic!("expected a session bind");
+    };
+    assert_eq!(binding.host_key, None, "an unverified bind names no host");
+
+    let key = b"the requested key";
+    let login = login_message(&session_id, b"git", key);
+    let unverified = classify_sign(key, &login, std::slice::from_ref(&binding));
+    assert_eq!(
+        unverified,
+        SignKind::UserAuth {
+            user: "git".into(),
+            host: String::new(),
+        }
+    );
+    let missing = classify_sign(key, &login, &[]);
+    assert_eq!(
+        missing,
+        SignKind::UserAuth {
+            user: "git".into(),
+            host: String::new(),
+        }
+    );
+
+    for kind in [unverified, missing] {
+        let unnameable = SignScope {
+            kind,
+            forwarded: forwarding,
+        };
+        assert!(
+            !unnameable.grantable(),
+            "a login with no verified server must not offer or accept a grant"
+        );
+
+        let mut approvals = ApprovalManager::new(rustix::process::geteuid().as_raw());
+        let ssh = peer(400, 70, "/usr/bin/ssh");
+        let id = match approvals
+            .submit(1, key, ssh.clone(), unnameable.clone(), 0)
+            .unwrap()
+        {
+            Submit::Pending(id) => id,
+            Submit::Granted(_) => panic!("no grant exists"),
+        };
+        approvals.approve(id, 900, 1).unwrap();
+        assert!(
+            approvals.grants().is_empty(),
+            "approving once must not open a grant for an unreported server"
+        );
+        assert!(
+            matches!(
+                approvals.submit(1, key, ssh, unnameable, 2).unwrap(),
+                Submit::Pending(_)
+            ),
+            "the next unreported login still asks"
         );
     }
 }

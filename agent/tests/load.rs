@@ -27,6 +27,7 @@ impl TempDir {
             rand_core::RngCore::next_u64(&mut OsRng)
         ));
         fs::create_dir(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         Self(path)
     }
 }
@@ -114,6 +115,32 @@ fn refuses_stale_wrong_type_symlink_and_insecure_directory() {
     std::os::unix::fs::symlink(&target, linked.0.join("qs-bitwarden-cli")).unwrap();
     assert_eq!(
         Runtime::create(&linked.0).unwrap_err(),
+        RuntimeError::UnsafeDirectory
+    );
+}
+
+#[test]
+fn refuses_relative_symlinked_or_shared_runtime_root() {
+    assert_eq!(
+        Runtime::create(std::path::Path::new("relative-runtime-root")).unwrap_err(),
+        RuntimeError::UnsafeDirectory
+    );
+
+    let shared = TempDir::new("shared-root");
+    fs::set_permissions(&shared.0, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        Runtime::create(&shared.0).unwrap_err(),
+        RuntimeError::UnsafeDirectory
+    );
+
+    let linked = TempDir::new("linked-root");
+    let target = linked.0.join("target");
+    fs::create_dir(&target).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+    let link = linked.0.join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert_eq!(
+        Runtime::create(&link).unwrap_err(),
         RuntimeError::UnsafeDirectory
     );
 }
@@ -417,6 +444,43 @@ fn discarding_empties_the_fifo_without_waiting() {
             .unwrap_err(),
         RuntimeError::ReadTimeout,
         "a discarded payload must not be read by a later load"
+    );
+}
+
+#[test]
+fn resetting_the_fifo_after_a_lock_does_not_leave_key_material_for_the_next_load() {
+    use std::io::Write;
+
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let temp = TempDir::new("reset");
+    let mut runtime = Runtime::create(&temp.0).unwrap();
+    let mut late = fs::OpenOptions::new()
+        .write(true)
+        .open(runtime.fifo_path())
+        .unwrap();
+    // A payload written for the cancelled load, as a panel that had not
+    // noticed the lock yet would leave it buffered.
+    late.write_all(&line(&jq_payload(STALE, vec![item_json("old", &key)])))
+        .unwrap();
+
+    runtime.reset_fifo().unwrap();
+
+    let metadata = fs::symlink_metadata(runtime.fifo_path()).unwrap();
+    assert!(metadata.file_type().is_fifo());
+    assert_eq!(metadata.mode() & 0o777, 0o600);
+    assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
+
+    // The writer's old descriptor now has no reader: its private-key payload
+    // cannot land in the replacement FIFO.
+    let error = late.write_all(&line(b"{\"private\":\"key\"}")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+
+    // Nothing is readable by the next load, which owns the fresh FIFO.
+    assert_eq!(
+        runtime
+            .read_payload(Duration::from_millis(20), &filter(NONCE))
+            .unwrap_err(),
+        RuntimeError::ReadTimeout
     );
 }
 

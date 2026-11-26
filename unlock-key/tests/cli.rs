@@ -47,11 +47,10 @@ fn hmac(byte: u8) -> String {
     Base64::encode_string(&[byte; 32])
 }
 
-fn run(args: &[&str], env: &[(&str, &str)], stdin: &[u8]) -> Output {
+fn run_env(args: &[&str], env: &[(&str, &str)], stdin: &[u8]) -> Output {
     let mut child = Command::new(BIN)
         .args(args)
         .env_clear()
-        .envs(ACCOUNT_ENV)
         .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -62,6 +61,13 @@ fn run(args: &[&str], env: &[(&str, &str)], stdin: &[u8]) -> Output {
     // pipe then is expected, not a failure.
     let _ = child.stdin.take().unwrap().write_all(stdin);
     child.wait_with_output().unwrap()
+}
+
+fn run(args: &[&str], env: &[(&str, &str)], stdin: &[u8]) -> Output {
+    // `env` may override the account; a later entry for the same name wins.
+    let mut base: Vec<(&str, &str)> = ACCOUNT_ENV.to_vec();
+    base.extend_from_slice(env);
+    run_env(args, &base, stdin)
 }
 
 fn ok(args: &[&str], env: &[(&str, &str)], stdin: &[u8]) -> Vec<u8> {
@@ -192,6 +198,20 @@ fn inspect_shows_what_the_panel_needs_and_no_secret() {
 }
 
 #[test]
+fn inspect_reports_the_pin_kdf_so_legacy_wraps_are_recognisable() {
+    let envelope = with_all_methods();
+    let summary: serde_json::Value =
+        serde_json::from_slice(&ok(&["inspect"], &[], &envelope)).unwrap();
+    // The panel compares these against its current PIN cost and can re-wrap a
+    // legacy envelope that sits below the floor.
+    assert_eq!(summary["pin"]["alg"], "argon2id");
+    assert_eq!(summary["pin"]["salt"], "cGluLXNhbHQtMDAwMDAwMDA=");
+    assert_eq!(summary["pin"]["m"], 262144);
+    assert_eq!(summary["pin"]["t"], 4);
+    assert_eq!(summary["pin"]["p"], 1);
+}
+
+#[test]
 fn exit_codes_say_what_went_wrong() {
     let envelope = with_all_methods();
     // 3: a wrong key.
@@ -263,7 +283,9 @@ fn exit_codes_say_what_went_wrong() {
         open(&bare, &["--via", "pin"], Some(&hex(2))).status.code(),
         Some(7)
     );
-    assert_eq!(code(&["remove", "--method", "fingerprint"], &[], &bare), 7);
+    // Fingerprint removal is a usage refusal before the envelope is read; see
+    // removing_only_the_fingerprint_wrap_is_refused.
+    assert_eq!(code(&["remove", "--method", "fingerprint"], &[], &bare), 2);
 }
 
 #[test]
@@ -301,27 +323,37 @@ fn usage_errors_are_refused_before_anything_runs() {
 
 #[test]
 fn the_account_is_required_in_the_environment() {
-    let envelope = created();
+    let envelope = with_all_methods();
     let key = hex(1);
-    for missing in ["QSBW_ACCOUNT_ID", "QSBW_SERVER"] {
-        let env: Vec<(&str, &str)> = ACCOUNT_ENV
-            .iter()
-            .copied()
-            .filter(|(name, _)| *name != missing)
-            .chain([("QSBW_UNLOCK_KEY", key.as_str())])
-            .collect();
-        let mut child = Command::new(BIN)
-            .args(["open", "--via", "master"])
-            .env_clear()
-            .envs(env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let _ = child.stdin.take().unwrap().write_all(&envelope);
-        let output = child.wait_with_output().unwrap();
-        assert_eq!(output.status.code(), Some(2), "{missing} missing");
+    for command in [
+        vec!["open", "--via", "master"],
+        vec!["remove", "--method", "pin"],
+        vec!["mark-stale"],
+    ] {
+        for missing in ["QSBW_ACCOUNT_ID", "QSBW_SERVER"] {
+            let env: Vec<(&str, &str)> = ACCOUNT_ENV
+                .iter()
+                .copied()
+                .filter(|(name, _)| *name != missing)
+                .chain([("QSBW_UNLOCK_KEY", key.as_str())])
+                .collect();
+            let output = run_env(&command, &env, &envelope);
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{command:?}: {missing} missing"
+            );
+        }
+    }
+}
+
+#[test]
+fn writes_refuse_an_envelope_for_another_account() {
+    let envelope = with_all_methods();
+    for command in [vec!["remove", "--method", "pin"], vec!["mark-stale"]] {
+        let output = run(&command, &[("QSBW_ACCOUNT_ID", "user-2")], &envelope);
+        assert_eq!(output.status.code(), Some(6), "{command:?}");
+        assert!(output.stdout.is_empty(), "{command:?}: nothing written");
     }
 }
 
@@ -366,11 +398,10 @@ fn a_changed_password_rotates_without_losing_a_method() {
 }
 
 #[test]
-fn removing_every_method_keeps_the_master_wrap() {
+fn removing_pin_and_fido_keeps_the_master_wrap() {
     let mut envelope = with_all_methods();
     for args in [
         vec!["remove", "--method", "pin"],
-        vec!["remove", "--method", "fingerprint"],
         vec!["remove", "--method", "fido", "--cred", CRED],
     ] {
         envelope = ok(&args, &[], &envelope);
@@ -378,12 +409,70 @@ fn removing_every_method_keeps_the_master_wrap() {
     let summary: serde_json::Value =
         serde_json::from_slice(&ok(&["inspect"], &[], &envelope)).unwrap();
     assert!(summary.get("pin").is_none());
-    assert_eq!(summary["fingerprint"], false);
+    // The fingerprint wrap is the DEK; it stays until the envelope is deleted.
+    assert_eq!(summary["fingerprint"], true);
     assert_eq!(summary["fido"].as_array().unwrap().len(), 0);
     assert_eq!(
         open(&envelope, &["--via", "master"], Some(&hex(1))).stdout,
         b"correct horse"
     );
+}
+
+#[test]
+fn removing_only_the_fingerprint_wrap_is_refused() {
+    let envelope = with_all_methods();
+    let output = run(&["remove", "--method", "fingerprint"], &[], &envelope);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        output.stdout.is_empty(),
+        "nothing may be written on a refusal"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("delete"),
+        "the refusal says what to do instead"
+    );
+}
+
+#[test]
+fn a_fingerprint_add_writes_to_a_pipe() {
+    // The panel always pipes the result into systemd-creds; only a terminal is
+    // refused (covered by the unit test, since the test harness captures
+    // stdout as a pipe).
+    let envelope = created();
+    let args = with(&[&["add"], &["--auth", "master", "--method", "fingerprint"]]);
+    let output = run(&refs(&args), &[("QSBW_UNLOCK_KEY", &hex(1))], &envelope);
+    assert_eq!(output.status.code(), Some(0));
+    let summary: serde_json::Value =
+        serde_json::from_slice(&ok(&["inspect"], &[], &output.stdout)).unwrap();
+    assert_eq!(summary["fingerprint"], true);
+}
+
+#[test]
+fn rotate_remove_and_mark_stale_write_a_fingerprint_envelope_to_a_pipe() {
+    // These commands return an envelope they did not build from scratch, so a
+    // fingerprint wrap added earlier is still in it. A pipe (the panel's path)
+    // must stay open; the terminal refusal is covered by the unit test.
+    let envelope = with_all_methods();
+    let args = with(&[&["rotate"], &["--auth", "fingerprint"], &MASTER_KDF]);
+    let rotated = ok(
+        &refs(&args),
+        &[
+            ("QSBW_UNLOCK_PASSWORD", "battery staple"),
+            ("QSBW_UNLOCK_NEW_KEY", &hex(4)),
+        ],
+        &envelope,
+    );
+    let removed = ok(&["remove", "--method", "pin"], &[], &rotated);
+    let stale = ok(&["mark-stale"], &[], &removed);
+    for (command, envelope) in [
+        ("rotate", &rotated),
+        ("remove", &removed),
+        ("mark-stale", &stale),
+    ] {
+        let summary: serde_json::Value =
+            serde_json::from_slice(&ok(&["inspect"], &[], envelope)).unwrap();
+        assert_eq!(summary["fingerprint"], true, "{command} keeps the wrap");
+    }
 }
 
 #[test]

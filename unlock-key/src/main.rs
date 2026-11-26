@@ -7,7 +7,8 @@
 //! (/proc/<pid>/cmdline is world-readable).
 //!
 //! Environment:
-//!   QSBW_ACCOUNT_ID       create/open/add/rotate: the account's user id
+//!   QSBW_ACCOUNT_ID       create/open/add/remove/rotate/mark-stale: the
+//!                         account's user id (inspect checks nothing)
 //!   QSBW_SERVER           the same: its server URL (may be empty)
 //!   QSBW_UNLOCK_PASSWORD  create: the password `bw` accepted
 //!                         rotate: the new password `bw` accepted
@@ -27,7 +28,7 @@ use qs_bitwarden_unlock_key::{
     PIN_ARGON2_MIN_ITERATIONS, PIN_ARGON2_MIN_MEMORY_KIB,
 };
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::os::unix::ffi::OsStringExt;
 use zeroize::Zeroizing;
 
@@ -149,7 +150,7 @@ fn create(flags: &Flags) -> Outcome {
     let password = secret_env(PASSWORD_ENV)?;
     let master_key = hex_env(NEW_KEY_ENV)?;
     let envelope = Envelope::create(flags.account()?, &password, flags.argon2()?, &master_key)?;
-    Ok(envelope.to_json()?)
+    emit_envelope(&envelope)
 }
 
 fn open(flags: &Flags) -> Outcome {
@@ -172,9 +173,10 @@ fn add(flags: &Flags) -> Outcome {
         "rp",
         "fido-salt",
     ])?;
+    let method = flags.required("method")?;
     let mut envelope = read_envelope(Some(&flags.account()?))?;
     let auth = ViaKey::from_env(flags.required("auth")?, flags.optional("auth-cred"))?;
-    match flags.required("method")? {
+    match method {
         "pin" => {
             let pin_key = hex_env(NEW_KEY_ENV)?;
             envelope.add_pin(&auth.via()?, flags.argon2()?, &pin_key)?;
@@ -192,22 +194,53 @@ fn add(flags: &Flags) -> Outcome {
         }
         _ => return Err(Failure::Usage("--method must be pin, fingerprint or fido")),
     }
+    emit_envelope(&envelope)
+}
+
+/// Write the envelope to stdout. Any envelope may carry a fingerprint wrap, not
+/// only the one `add --method fingerprint` just wrote: `rotate`, `remove` and
+/// `mark-stale` pass an envelope through, and `wraps.fingerprint.k` is the DEK
+/// itself. Printing that to a terminal puts a password-equivalent in
+/// scrollback, so every command that returns an envelope goes through here and
+/// a terminal is refused while a pipe or redirected file still works. `create`
+/// never writes a fingerprint wrap, so its envelope stays printable.
+fn emit_envelope(envelope: &Envelope) -> Outcome {
+    envelope_output_ok(
+        envelope.summary().fingerprint,
+        std::io::stdout().is_terminal(),
+    )?;
     Ok(envelope.to_json()?)
+}
+
+fn envelope_output_ok(fingerprint: bool, terminal: bool) -> Result<(), Failure> {
+    if fingerprint && terminal {
+        Err(Failure::Usage(
+            "this envelope contains the data key; pipe it or redirect it, do not print it to a terminal",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn remove(flags: &Flags) -> Outcome {
     flags.only(&["method", "cred"])?;
-    let mut envelope = read_envelope(None)?;
+    // Removing only the fingerprint wrap would leave the DEK in `ct` with no
+    // method pointing at it. Deleting the whole envelope is the only safe way.
+    if flags.required("method")? == "fingerprint" {
+        return Err(Failure::Usage(
+            "fingerprint removal deletes the whole envelope; delete the envelope instead",
+        ));
+    }
+    let mut envelope = read_envelope(Some(&flags.account()?))?;
     let method = match flags.required("method")? {
         "pin" => Method::Pin,
-        "fingerprint" => Method::Fingerprint,
         "fido" => Method::Fido {
             credential: flags.required("cred")?,
         },
-        _ => return Err(Failure::Usage("--method must be pin, fingerprint or fido")),
+        _ => return Err(Failure::Usage("--method must be pin or fido")),
     };
     envelope.remove(&method)?;
-    Ok(envelope.to_json()?)
+    emit_envelope(&envelope)
 }
 
 fn rotate(flags: &Flags) -> Outcome {
@@ -217,14 +250,14 @@ fn rotate(flags: &Flags) -> Outcome {
     let password = secret_env(PASSWORD_ENV)?;
     let master_key = hex_env(NEW_KEY_ENV)?;
     envelope.rotate(&auth.via()?, &password, flags.argon2()?, &master_key)?;
-    Ok(envelope.to_json()?)
+    emit_envelope(&envelope)
 }
 
 fn mark_stale(flags: &Flags) -> Outcome {
     flags.only(&[])?;
-    let mut envelope = read_envelope(None)?;
+    let mut envelope = read_envelope(Some(&flags.account()?))?;
     envelope.mark_stale();
-    Ok(envelope.to_json()?)
+    emit_envelope(&envelope)
 }
 
 fn inspect(flags: &Flags) -> Outcome {
@@ -507,16 +540,19 @@ fn print_help() {
         "{NAME} <command> [--flag value]...
 
 The master password encrypted once, for the Bitwarden panel's quick unlock.
-Secrets and the account (QSBW_ACCOUNT_ID, QSBW_SERVER; create, open, add and
-rotate) come only from the environment; the envelope comes on stdin.
+Secrets and the account (QSBW_ACCOUNT_ID, QSBW_SERVER; every command except
+inspect) come only from the environment; the envelope comes on stdin. An
+envelope that holds a fingerprint wrap contains the data key: writing it to a
+terminal is refused, so pipe or redirect it.
 
   create      --salt --m --t --p
   open        --via master|pin|fingerprint|fido [--cred]
   add         --auth <method> [--auth-cred] --method pin
                   --salt --m --t --p
-              ... --method fingerprint
+              ... --method fingerprint   (stdout only; never a terminal)
               ... --method fido --cred --rp --fido-salt
-  remove      --method pin|fingerprint|fido [--cred]
+  remove      --method pin|fido [--cred]
+                  (a fingerprint wrap is the DEK; delete the envelope)
   rotate      --auth <method> [--auth-cred] --salt --m --t --p
   mark-stale
   inspect
@@ -534,6 +570,68 @@ mod tests {
             credential,
             key: key.then(|| Zeroizing::new([7; KEY_LEN])),
         }
+    }
+
+    #[test]
+    fn a_fingerprint_envelope_is_never_printed_to_a_terminal() {
+        // A pipe (or a redirected file) is the panel's path and must still work.
+        assert!(envelope_output_ok(true, false).is_ok());
+        assert!(matches!(
+            envelope_output_ok(true, true),
+            Err(Failure::Usage(message)) if message.contains("data key")
+        ));
+        // `create` never writes a fingerprint wrap, so its envelope is printable.
+        assert!(envelope_output_ok(false, true).is_ok());
+    }
+
+    #[test]
+    fn rotate_remove_and_mark_stale_keep_a_fingerprint_envelope_off_a_terminal() {
+        let envelope = test_envelope().expect("self-test envelope");
+        let mut rotated = envelope.clone();
+        rotated
+            .rotate(
+                &Via::Fingerprint,
+                b"rotated password",
+                Argon2Params::new(TEST_SALT, ARGON2_MIN_MEMORY_KIB, ARGON2_MIN_ITERATIONS, 1)
+                    .unwrap(),
+                &[4; KEY_LEN],
+            )
+            .unwrap();
+        let mut removed = envelope.clone();
+        removed.remove(&Method::Pin).unwrap();
+        let mut stale = envelope.clone();
+        stale.mark_stale();
+
+        for (command, envelope) in [
+            ("rotate", rotated),
+            ("remove", removed),
+            ("mark-stale", stale),
+        ] {
+            assert!(envelope.summary().fingerprint, "{command} keeps the wrap");
+            // A pipe still works, but a terminal is refused for each one.
+            assert!(
+                envelope_output_ok(envelope.summary().fingerprint, false).is_ok(),
+                "{command}: a pipe"
+            );
+            assert!(
+                matches!(
+                    envelope_output_ok(envelope.summary().fingerprint, true),
+                    Err(Failure::Usage(message)) if message.contains("data key")
+                ),
+                "{command}: a terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn an_envelope_without_a_fingerprint_wrap_is_printable_to_a_terminal() {
+        let account = Account::new("self-test", "https://example.invalid").unwrap();
+        let params =
+            Argon2Params::new(TEST_SALT, ARGON2_MIN_MEMORY_KIB, ARGON2_MIN_ITERATIONS, 1).unwrap();
+        let envelope =
+            Envelope::create(account, b"self-test password", params, &[1; KEY_LEN]).unwrap();
+        assert!(!envelope.summary().fingerprint);
+        assert!(envelope_output_ok(envelope.summary().fingerprint, true).is_ok());
     }
 
     #[test]

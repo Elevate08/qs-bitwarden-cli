@@ -23,6 +23,10 @@ const MAX_RUNS: usize = 32;
 /// Past the panel's own caps (16 MiB for the list), so they decide first.
 const MAX_STDOUT: usize = 24 * 1024 * 1024;
 const MAX_STDERR: usize = 64 * 1024;
+/// A clipboard value past this is refused before a worker is started: no
+/// password or TOTP code is near it, and an unbounded write could hold the
+/// worker on a `wl-copy` that does not read.
+const MAX_CLIPBOARD: usize = 1024 * 1024;
 /// What the save pipeline prints when the save worked but its output could
 /// not be sanitized (BitwardenModel.js SAVED_UNSANITIZED_MARKER).
 const SAVED_UNSANITIZED: &str = "__QSBW_SAVED_UNSANITIZED__";
@@ -41,10 +45,18 @@ const HELD_SESSION: &str = "HELD-BY-QS-BITWARDEN-VAULT-HELPER-SESSION";
 
 type Shared<T> = Arc<Mutex<T>>;
 
+/// A non-detached run: its process group, and the named secrets injected into
+/// it. `Forget` leaves a run whose injected names include a kept secret alone:
+/// the panel's `bw lock` runs with `secret:lockN`, which is kept.
+struct Run {
+    group: u32,
+    injected: Vec<String>,
+}
+
 struct Helper {
     store: Shared<Store>,
-    /// Run id -> process group, for `kill`.
-    runs: Shared<HashMap<u64, u32>>,
+    /// Run id -> process group and injected secret names, for `kill`.
+    runs: Shared<HashMap<u64, Run>>,
     /// Detached commands still running.
     detached: Arc<AtomicUsize>,
     /// An auto-type in progress (at most one).
@@ -116,6 +128,9 @@ fn main() {
         eprintln!("{NAME}: could not turn core dumps off; refusing to run");
         std::process::exit(1);
     }
+    // Before any thread or child exists: what the launcher exported is not
+    // part of the protocol, and every child would inherit it.
+    scrub_ambient_secrets();
 
     let (out, lines) = mpsc::channel::<Line>();
     let writer = thread::spawn(move || {
@@ -169,20 +184,51 @@ fn main() {
     helper.stop_typing();
     let any = {
         let runs = helper.runs.lock().unwrap();
-        for group in runs.values() {
-            signal_group(*group, rustix::process::Signal::TERM);
+        for run in runs.values() {
+            signal_group(run.group, rustix::process::Signal::TERM);
         }
         !runs.is_empty()
     };
     if any {
         thread::sleep(std::time::Duration::from_millis(500));
-        for group in helper.runs.lock().unwrap().values() {
-            signal_group(*group, rustix::process::Signal::KILL);
+        for run in helper.runs.lock().unwrap().values() {
+            signal_group(run.group, rustix::process::Signal::KILL);
         }
     }
     helper.store.lock().unwrap().forget(&[]);
     drop(helper);
     let _ = writer.join();
+}
+
+/// Removes secret-bearing variables the helper may have inherited (a launcher
+/// with `BW_SESSION` exported, or a `QSBW_*` value left over). Children would
+/// otherwise get them through the inherited environment, where `/proc/<pid>/
+/// environ` exposes them after `exec`. The panel's own `env` map still
+/// reaches an individual run by name.
+fn scrub_ambient_secrets() {
+    const SECRETS: &[&str] = &[
+        "BW_SESSION",
+        "BW_PASSWORD",
+        "BW_CLIENTID",
+        "BW_CLIENTSECRET",
+        "QSBW_CODE",
+        "QSBW_DEVICE_CODE",
+        "QSBW_CLIP",
+        "QSBW_ITEM",
+        "QSBW_SECRET",
+        "QSBW_UNLOCK_KEY",
+        "QSBW_FIDO_HMAC",
+        "QSBW_PIN",
+        "QSBW_MASTER_PASSWORD",
+        "QSBW_UNLOCK_PASSWORD",
+        "QSBW_UNLOCK_NEW_KEY",
+        "QSBW_NEW_SECRET",
+        "QSBW_SEND",
+        "QSBW_FIDO_SALT",
+    ];
+    for name in SECRETS {
+        std::env::remove_var(name);
+    }
 }
 
 /// One line, bounded; an overlong line is read to its end and dropped.
@@ -238,12 +284,7 @@ impl Helper {
     }
 
     fn result(&self, q: u64, value: Option<Value>) {
-        match value {
-            Some(value) => {
-                self.send(json!({ "type": "result", "q": q, "ok": true, "value": value }))
-            }
-            None => self.send(json!({ "type": "result", "q": q, "ok": false })),
-        }
+        let _ = self.out.send(result_line(q, value));
     }
 
     /// Sends a reply built with `json_line`; `None` is a failure.
@@ -273,7 +314,7 @@ impl Helper {
             } => self.exec(id, argv, env, inject, capture.as_deref(), stdin, detach),
             Request::Kill { id, .. } => {
                 let runs = self.runs.lock().unwrap();
-                if let Some(group) = runs.get(&id).copied() {
+                if let Some(group) = runs.get(&id).map(|run| run.group) {
                     signal_group(group, rustix::process::Signal::TERM);
                     drop(runs);
                     stop_group(id, group, Arc::clone(&self.runs));
@@ -284,6 +325,40 @@ impl Helper {
                 // its password stops here, however much is left.
                 self.stop_typing();
                 self.store.lock().unwrap().forget(&keep);
+                // A non-detached run already has the old key in its
+                // environment. Signal each one as the shutdown path does:
+                // SIGTERM first, so a script's trap can stop its own `bw`,
+                // then SIGKILL after the grace period to what is still there.
+                // Signalled with the runs lock held: a run takes itself off
+                // the list before it is reaped, so a group listed here is
+                // still ours. A run injecting a kept secret (the panel's
+                // `bw lock`, with `secret:lockN`) is spared: its key is the
+                // one the panel is keeping. Detached commands are not in
+                // `runs`, so an unload's `bw lock` is untouched.
+                let groups: Vec<(u64, u32)> = {
+                    let runs = self.runs.lock().unwrap();
+                    let groups: Vec<(u64, u32)> = runs
+                        .iter()
+                        .filter(|(_, run)| !run.injected.iter().any(|name| keep.contains(name)))
+                        .map(|(id, run)| (*id, run.group))
+                        .collect();
+                    for (_, group) in &groups {
+                        signal_group(*group, rustix::process::Signal::TERM);
+                    }
+                    groups
+                };
+                if !groups.is_empty() {
+                    let runs = Arc::clone(&self.runs);
+                    thread::spawn(move || {
+                        thread::sleep(std::time::Duration::from_millis(500));
+                        let runs = runs.lock().unwrap();
+                        for (id, group) in groups {
+                            if runs.get(&id).map(|run| run.group) == Some(group) {
+                                signal_group(group, rustix::process::Signal::KILL);
+                            }
+                        }
+                    });
+                }
             }
             Request::HoldSession { name, .. } => {
                 self.store.lock().unwrap().hold_session(name);
@@ -353,13 +428,44 @@ impl Helper {
     }
 
     /// Answers a copy request: the value goes to the clipboard and not into
-    /// the reply. An absent or empty value is a failure.
+    /// the reply. An absent, empty or oversized value is a failure. The write
+    /// and the wait for `wl-copy` run on a worker, so a hung child cannot hold
+    /// the loop that handles `forget`, `kill` and `shutdown`; the reply is
+    /// sent for `q` once the worker knows whether the copy succeeded.
     fn copy(&self, q: u64, value: Option<Zeroizing<String>>, clear_sec: u32) {
-        let copied = value
-            .filter(|value| !value.is_empty())
-            .map(|value| copy_to_clipboard(value, clear_sec))
-            .unwrap_or(false);
-        self.result(q, copied.then_some(Value::Bool(true)));
+        let Some(value) = value.filter(|value| !value.is_empty()) else {
+            return self.result(q, None);
+        };
+        if value.len() > MAX_CLIPBOARD {
+            return self.result(q, None);
+        }
+        let out = self.out.clone();
+        thread::spawn(move || {
+            let Some(mut child) = spawn_clipboard(clear_sec) else {
+                let _ = out.send(result_line(q, None));
+                return;
+            };
+            let written = match child.stdin.take() {
+                Some(mut pipe) => {
+                    let written = pipe.write_all(value.as_bytes()).is_ok();
+                    drop(pipe);
+                    written
+                }
+                None => false,
+            };
+            // The value has been taken (or not): drop it before waiting out
+            // the selection.
+            drop(value);
+            // `timeout Ns wl-copy --foreground` keeps running for the whole
+            // selection, then exits 124: a child still running has taken the
+            // value. Only one that has already exited must have exited 0.
+            let copied = written && clipboard_accepted(&mut child);
+            let _ = out.send(result_line(q, copied.then_some(Value::Bool(true))));
+            // Not held by the selection lifetime: the value is gone and the
+            // reply is out, so the worker is free to reap the child.
+            drop(out);
+            let _ = child.wait();
+        });
     }
 
     /// Ends the auto-type in progress, if there is one: SIGKILL to its
@@ -457,15 +563,26 @@ impl Helper {
             };
         }
         // Read under the lock that resolves the injected values, so the run
-        // holds exactly the vault whose key it was given.
+        // holds exactly the vault whose key it was given. A named capture
+        // also takes the name's cancellation epoch, so a forget secret while
+        // the run is in flight fences its late answer.
         let generation;
+        let secret_epoch;
+        let mut injected = Vec::new();
         {
             let store = self.store.lock().unwrap();
             generation = store.generation();
+            secret_epoch = match &capture {
+                Capture::Secret(name) | Capture::Pinentry(name) => store.secret_epoch(name),
+                _ => 0,
+            };
             for (name, source) in &inject {
                 let value = match control::parse_source(source) {
                     Some(Source::Session) => store.session(),
-                    Some(Source::Secret(secret)) => store.secret(secret),
+                    Some(Source::Secret(secret)) => {
+                        injected.push(secret.to_owned());
+                        store.secret(secret)
+                    }
                     None => return refuse("unknown inject source"),
                 };
                 // Absent: left unset, and `bw` answers "locked" as it would.
@@ -533,12 +650,30 @@ impl Helper {
                 return self.send(json!({ "type": "exit", "id": id, "code": 127, "out": "", "err": "could not start" }))
             }
         };
-        self.runs.lock().unwrap().insert(id, child.id());
+        self.runs.lock().unwrap().insert(
+            id,
+            Run {
+                group: child.id(),
+                injected,
+            },
+        );
 
         let store = Arc::clone(&self.store);
         let runs = Arc::clone(&self.runs);
         let out = self.out.clone();
-        thread::spawn(move || run(id, child, stdin, capture, generation, store, runs, out));
+        thread::spawn(move || {
+            run(
+                id,
+                child,
+                stdin,
+                capture,
+                generation,
+                secret_epoch,
+                store,
+                runs,
+                out,
+            )
+        });
     }
 }
 
@@ -549,8 +684,9 @@ fn run(
     stdin: Option<Zeroizing<String>>,
     capture: Capture,
     generation: u64,
+    secret_epoch: u64,
     store: Shared<Store>,
-    runs: Shared<HashMap<u64, u32>>,
+    runs: Shared<HashMap<u64, Run>>,
     out: Sender<Line>,
 ) {
     if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
@@ -606,8 +742,23 @@ fn run(
     } else {
         Zeroizing::new(String::from_utf8_lossy(&stdout).into_owned())
     };
-    let (forwarded, session, held) = keep(&store, generation, &capture, code, &text);
-    let err = Zeroizing::new(String::from_utf8_lossy(&err).into_owned());
+    let (forwarded, mut session, held) =
+        keep(&store, generation, secret_epoch, &capture, code, &text);
+    let mut err = Zeroizing::new(String::from_utf8_lossy(&err).into_owned());
+    // A session key can also arrive on stderr (a `bw` or wrapper warning).
+    // Scrub it before forwarding and keep it only under the same rule as
+    // stdout: exit 0 and the generation the run started under. A key already
+    // kept from stdout stays the one the helper uses.
+    if capture == Capture::Session {
+        if let Some(key) = store::extract_session(&err) {
+            err = Zeroizing::new(err.replace(key.as_str(), HELD_SESSION));
+            let mut store = store.lock().unwrap();
+            if !session && code == 0 && store.generation() == generation {
+                store.set_session(key);
+                session = true;
+            }
+        }
+    }
     let _ = out.send(exit_line(id, code, &forwarded, &err, session, held));
 }
 
@@ -616,10 +767,12 @@ fn run(
 /// store's current generation may change the store: one that outlived a
 /// lock, logout or account switch gets its output cleaned up the same way
 /// but keeps nothing, or it would put the old vault back after the panel
-/// has forgotten it.
+/// has forgotten it. A named secret also carries the epoch it started under,
+/// so a `forgetSecret` while the run was in flight fences the late answer.
 fn keep(
     store: &Shared<Store>,
     generation: u64,
+    secret_epoch: u64,
     capture: &Capture,
     code: i32,
     text: &Zeroizing<String>,
@@ -645,8 +798,10 @@ fn keep(
         // Kept whatever the exit code: the FIDO2 legacy path prints the
         // password with a non-zero code. The panel judges the code.
         Capture::Secret(name) => {
-            if current && !text.is_empty() {
-                store.set_secret(name.clone(), text.clone());
+            if current
+                && !text.is_empty()
+                && store.set_secret(name.clone(), text.clone(), secret_epoch)
+            {
                 held = true;
             }
             Zeroizing::new(String::new())
@@ -657,8 +812,9 @@ fn keep(
             if current && code == 0 {
                 let answer = assuan::decode(text.trim_end_matches('\n'));
                 if let Some(pin) = answer.filter(|pin| !pin.is_empty()) {
-                    store.set_secret(name.clone(), pin);
-                    held = true;
+                    if store.set_secret(name.clone(), pin, secret_epoch) {
+                        held = true;
+                    }
                 }
             }
             Zeroizing::new(String::new())
@@ -715,6 +871,16 @@ fn json_line(parts: &[Part]) -> Line {
     }
     debug_assert_eq!(line.len(), len);
     line
+}
+
+/// `{"type":"result","q":<q>,"ok":true,"value":<value>}`, or `ok:false`.
+fn result_line(q: u64, value: Option<Value>) -> Line {
+    match value {
+        Some(value) => Zeroizing::new(
+            json!({ "type": "result", "q": q, "ok": true, "value": value }).to_string(),
+        ),
+        None => Zeroizing::new(json!({ "type": "result", "q": q, "ok": false }).to_string()),
+    }
 }
 
 /// `{"type":"result","q":<q>,"ok":true,"value":"<value>"}`: a reply whose
@@ -833,11 +999,11 @@ fn drain(mut pipe: impl Read, cap: usize) -> Drained {
 /// then SIGKILL if the run is still there after a grace period.
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
-fn stop_group(id: u64, group: u32, runs: Shared<HashMap<u64, u32>>) {
+fn stop_group(id: u64, group: u32, runs: Shared<HashMap<u64, Run>>) {
     thread::spawn(move || {
         thread::sleep(STOP_GRACE);
         let runs = runs.lock().unwrap();
-        if runs.get(&id) == Some(&group) {
+        if runs.get(&id).map(|run| run.group) == Some(group) {
             signal_group(group, rustix::process::Signal::KILL);
         }
     });
@@ -853,8 +1019,9 @@ fn signal_group(group: u32, signal: rustix::process::Signal) {
 /// `timeout Ns wl-copy --foreground --sensitive` with the value on stdin: the
 /// copy clears itself after N seconds, even if the shell restarts, and a
 /// newer copy ends it early. In its own process group, so a run's kill
-/// never reaches it.
-fn copy_to_clipboard(value: Zeroizing<String>, clear_sec: u32) -> bool {
+/// never reaches it. Spawned here; the copy worker writes the value, decides
+/// success and reaps it.
+fn spawn_clipboard(clear_sec: u32) -> Option<Child> {
     let mut command = if clear_sec > 0 {
         let mut c = Command::new("timeout");
         c.arg(format!("{clear_sec}s"))
@@ -870,18 +1037,18 @@ fn copy_to_clipboard(value: Zeroizing<String>, clear_sec: u32) -> bool {
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let Ok(mut child) = command.spawn() else {
-        return false;
-    };
-    let Some(mut pipe) = child.stdin.take() else {
-        return false;
-    };
-    let written = pipe.write_all(value.as_bytes()).is_ok();
-    drop(pipe);
-    thread::spawn(move || {
-        let _ = child.wait();
-    });
-    written
+    command.spawn().ok()
+}
+
+/// Whether a clipboard child has taken the value. One still running (the
+/// `--foreground` selection, which `timeout` ends with 124) has; one that
+/// exited must have exited 0.
+fn clipboard_accepted(child: &mut Child) -> bool {
+    match child.try_wait() {
+        Ok(Some(status)) => status.success(),
+        Ok(None) => true,
+        Err(_) => false,
+    }
 }
 
 /// What auto-type types: the username, Tab and the password, or the password
@@ -917,14 +1084,28 @@ fn auto_type_text(
 /// group, so a run's kill never reaches it, and with a UTF-8 locale: under C,
 /// `wtype` stops at the first character outside ASCII and still exits 0.
 fn spawn_wtype(program: &str) -> std::io::Result<Child> {
-    Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(WTYPE_ARGS)
         .env("LC_ALL", "C.UTF-8")
         .process_group(0)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    // A `wtype` that outlived a crashed or SIGKILLed helper would finish
+    // typing after the vault is locked, and it already holds the text. The
+    // kernel kills it with the helper: SIGKILL, as `stop_typing` uses, since
+    // it has no cleanup of its own to run.
+    // The kernel ties the signal to the thread that forked, not the process,
+    // so this must stay on the main loop thread, as a run's does.
+    // SAFETY: only async-signal-safe work between fork and exec (prctl).
+    unsafe {
+        command.pre_exec(|| {
+            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
+                .map_err(std::io::Error::from)
+        });
+    }
+    command.spawn()
 }
 
 /// Why `wtype` did not start: not installed ("missing"), or anything else
@@ -1025,6 +1206,25 @@ mod tests {
     }
 
     #[test]
+    fn a_clipboard_child_that_exited_is_accepted_only_when_it_succeeded() {
+        let mut failed = Command::new("sh").arg("-c").arg("exit 1").spawn().unwrap();
+        assert_eq!(failed.wait().unwrap().code(), Some(1));
+        assert!(!clipboard_accepted(&mut failed));
+
+        let mut ok = Command::new("sh").arg("-c").arg("exit 0").spawn().unwrap();
+        assert!(ok.wait().unwrap().success());
+        assert!(clipboard_accepted(&mut ok));
+    }
+
+    #[test]
+    fn a_clipboard_child_still_running_has_taken_the_value() {
+        let mut running = Command::new("sh").args(["-c", "sleep 1"]).spawn().unwrap();
+        assert!(clipboard_accepted(&mut running));
+        let _ = running.kill();
+        let _ = running.wait();
+    }
+
+    #[test]
     fn wtype_gets_no_secret_in_its_arguments() {
         assert_eq!(WTYPE_ARGS.last(), Some(&"-"));
         assert_eq!(WTYPE_ARGS.iter().filter(|a| **a == "-").count(), 1);
@@ -1056,13 +1256,13 @@ mod tests {
         let store = shared();
         let started = store.lock().unwrap().generation();
         store.lock().unwrap().forget(&[]);
-        let (shown, session, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
+        let (shown, session, _) = keep(&store, started, 0, &Capture::Session, 0, &text(KEY));
         assert_eq!(shown.as_str(), HELD_SESSION);
         assert!(!session);
         assert!(store.lock().unwrap().session().is_none());
 
         let now = store.lock().unwrap().generation();
-        let (_, session, _) = keep(&store, now, &Capture::Session, 0, &text(KEY));
+        let (_, session, _) = keep(&store, now, 0, &Capture::Session, 0, &text(KEY));
         assert!(session);
         assert_eq!(store.lock().unwrap().session(), Some(KEY));
     }
@@ -1073,10 +1273,28 @@ mod tests {
         let started = store.lock().unwrap().generation();
         store.lock().unwrap().forget(&[]);
         let capture = Capture::Secret("pw".to_owned());
-        let (shown, _, held) = keep(&store, started, &capture, 0, &text("hunter2"));
+        let (shown, _, held) = keep(&store, started, 0, &capture, 0, &text("hunter2"));
         assert!(shown.is_empty());
         assert!(!held);
         assert!(store.lock().unwrap().secret("pw").is_none());
+    }
+
+    #[test]
+    fn a_cancelled_secret_capture_is_fenced_by_its_epoch() {
+        let store = shared();
+        let generation = store.lock().unwrap().generation();
+        let epoch = store.lock().unwrap().secret_epoch("pw");
+        store.lock().unwrap().forget_secret("pw");
+        let capture = Capture::Secret("pw".to_owned());
+        let (_, _, held) = keep(&store, generation, epoch, &capture, 0, &text("late"));
+        assert!(!held);
+        assert!(store.lock().unwrap().secret("pw").is_none());
+
+        // A run that starts after the forget captures the new epoch.
+        let epoch = store.lock().unwrap().secret_epoch("pw");
+        let (_, _, held) = keep(&store, generation, epoch, &capture, 0, &text("fresh"));
+        assert!(held);
+        assert_eq!(store.lock().unwrap().secret("pw"), Some("fresh"));
     }
 
     #[test]
@@ -1084,19 +1302,19 @@ mod tests {
         let store = shared();
         let now = store.lock().unwrap().generation();
         let capture = Capture::Pinentry("pin".to_owned());
-        let (shown, session, held) = keep(&store, now, &capture, 0, &text("a%25%0Ab+c\n"));
+        let (shown, session, held) = keep(&store, now, 0, &capture, 0, &text("a%25%0Ab+c\n"));
         assert!(shown.is_empty() && !session && held);
         assert_eq!(store.lock().unwrap().secret("pin"), Some("a%\nb+c"));
 
         // A cancel, an empty answer, malformed data and a crash keep
         // nothing, and do not replace what is held.
         for (code, answer) in [(1, "x"), (0, ""), (0, "%zz"), (4, "x")] {
-            let (shown, _, held) = keep(&store, now, &capture, code, &text(answer));
+            let (shown, _, held) = keep(&store, now, 0, &capture, code, &text(answer));
             assert!(shown.is_empty() && !held, "{code} {answer}");
         }
         assert_eq!(store.lock().unwrap().secret("pin"), Some("a%\nb+c"));
         store.lock().unwrap().forget(&[]);
-        let (_, _, held) = keep(&store, now, &capture, 0, &text("late"));
+        let (_, _, held) = keep(&store, now, 0, &capture, 0, &text("late"));
         assert!(!held);
         assert!(store.lock().unwrap().secret("pin").is_none());
     }
@@ -1107,7 +1325,7 @@ mod tests {
         let started = store.lock().unwrap().generation();
         store.lock().unwrap().forget(&[]);
         let vault = r#"{"items":[{"id":"a","name":"n","login":{"password":"p"}}]}"#;
-        let (shown, _, _) = keep(&store, started, &Capture::Vault, 0, &text(vault));
+        let (shown, _, _) = keep(&store, started, 0, &Capture::Vault, 0, &text(vault));
         assert!(shown.is_empty());
         assert!(store.lock().unwrap().item("a").is_none());
 
@@ -1115,6 +1333,7 @@ mod tests {
         let (shown, _, _) = keep(
             &store,
             started,
+            0,
             &Capture::VaultMerge,
             0,
             &text(SAVED_UNSANITIZED),
@@ -1127,7 +1346,7 @@ mod tests {
         let store = shared();
         let started = store.lock().unwrap().generation();
         store.lock().unwrap().forget(&["pw".to_owned()]);
-        let (_, session, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
+        let (_, session, _) = keep(&store, started, 0, &Capture::Session, 0, &text(KEY));
         assert!(!session);
     }
 

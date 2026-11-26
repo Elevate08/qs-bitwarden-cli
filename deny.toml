@@ -53,9 +53,14 @@ confidence-threshold = 0.9
 [bans]
 # Duplicate major versions of one crate mean two copies compiled in. For a
 # crypto dependency that also means two implementations, one of which nobody
-# audited. Warn rather than deny: transitive duplicates are common and often
-# outside our control, but they should be visible in the log.
-multiple-versions = "warn"
+# audited, so any duplicate is now fatal. The only accepted duplicate is
+# `syn`, a proc-macro-only parser that is not linked into the helper and is
+# not crypto; both versions are named here, so a new duplicate still fails.
+multiple-versions = "deny"
+skip = [
+  { name = "syn", version = "=2.0.119" },
+  { name = "syn", version = "=3.0.4" },
+]
 wildcards = "deny"
 # Nothing here should reach for the network or spawn processes; both would
 # contradict the design's claim that the helper has exactly three inputs.

@@ -1,6 +1,7 @@
 import QtQuick
 import qs.Commons
 import qs.Ui
+import "BitwardenModel.js" as Model
 
 // Bitwarden's master password re-prompt: an item with the flag asks for the
 // master password before any of its secrets is shown, copied or edited. The
@@ -122,7 +123,10 @@ Item {
       Text {
         textFormat: Text.PlainText
         width: parent.width
-        text: (confirm.vault.repromptItemName ? confirm.vault.repromptItemName : "This item")
+        // The name is vault text from a possibly shared item: escape bidi and
+        // zero-width characters so it cannot misdescribe which item asks.
+        text: (confirm.vault.repromptItemName
+            ? Model.visibleText(confirm.vault.repromptItemName) : "This item")
           + " asks for your master password before its secrets are shown, copied or edited."
         color: confirm.panel.fg
         font.family: confirm.panel.fontFamily

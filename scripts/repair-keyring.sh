@@ -82,6 +82,22 @@ scan() {
   ' "$2" "$2"
 }
 
+# The file's identity and bytes as they were when the scan began. Checked
+# again just before the rename: an advisory lock does not stop a keyring
+# daemon, so a concurrent write must abort the repair rather than be lost.
+snapshot() { stat -c '%d:%i:%s:%y' -- "$1"; }
+hash_file() { sha256sum -- "$1" | cut -d' ' -f1; }
+
+# Serialize repair against other repair runs (and anything else that takes
+# this lock) for the whole scan -> verify -> backup -> mv sequence.
+command -v flock >/dev/null 2>&1 \
+  || die "flock is not available; refusing to rewrite the keyring without a lock"
+exec 9<"$file"
+flock -n 9 || die "the keyring is busy (another process is writing it); nothing was changed"
+
+file_before="$(snapshot "$file")"
+hash_before="$(hash_file "$file")"
+
 read -r items lines foreign < <(scan stats "$file")
 
 if [ "$foreign" -gt 0 ]; then
@@ -106,8 +122,18 @@ read -r left _ _ < <(scan stats "$tmp")
 [ "$(wc -l < "$tmp")" -eq "$(( $(wc -l < "$file") - lines ))" ] \
   || die "the repaired copy is not the original less the joined lines; $file is unchanged"
 
+unchanged() {
+  [ "$(snapshot "$file")" = "$file_before" ] && [ "$(hash_file "$file")" = "$hash_before" ]
+}
+
+# Immediately before replacing it, require the target to still be the file
+# that was scanned. If a daemon wrote meanwhile, its update is preserved and
+# this run changes nothing.
+unchanged || die "the keyring changed while it was being repaired; $file is unchanged"
 backup="$file.before-repair-$(date +%Y%m%d-%H%M%S)"
 cp -p -- "$file" "$backup"
+# cp reads the target; check once more just before the rename.
+unchanged || die "the keyring changed while it was being repaired; $file is unchanged"
 chmod --reference="$file" -- "$tmp"
 mv -f -- "$tmp" "$file"
 trap - EXIT

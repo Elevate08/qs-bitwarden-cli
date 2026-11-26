@@ -174,6 +174,36 @@ check("startup runs once, on the first attach, instead of at creation",
 check("the IPC target is claimed only by a live vault",
   /IpcHandler \{\s*target: "io\.github\.elevate08\.qs-bitwarden-cli"\s*enabled: root\.live/.test(service),
   "IpcHandler must be enabled only while live")
+
+// --- IPC cannot interrupt auth or replace an approval screen (UI-1, UI-2) ---
+const openFromIpc = functionBody(service, "openFromIpc")
+check("IPC has a non-auth open path",
+  !!openFromIpc && !/cancelPinentry\(/.test(openFromIpc)
+    && !/isUnlocking\s*=/.test(openFromIpc) && !/unlockSubmitted\s*=/.test(openFromIpc)
+    && /showPopout\(\)/.test(openFromIpc),
+  openFromIpc)
+check("the IPC open and navigation handlers use it",
+  /function open\(\): void \{ root\.openFromIpc\(\) \}/.test(service)
+    && /function settings\(\)[\s\S]{0,160}?root\.openFromIpc\(\)/.test(service)
+    && /function setup\(\)[\s\S]{0,160}?root\.openFromIpc\(\)/.test(service),
+  "IpcHandler still calls the user-facing open()")
+check("the IPC toggle opens without touching a pinentry or the unlock guard",
+  /function toggle\(\): void \{\s*if \(root\.opened\) root\.close\(\)\s*else root\.openFromIpc\(\)\s*\}/.test(service)
+    && !/function toggle\(\): void \{ root\.toggle\(\) \}/.test(service),
+  "IpcHandler toggle still calls the user-facing open()")
+const sshApprovalInPanel = functionBody(service, "sshApprovalInPanel")
+check("settings and setup refuse to replace an in-panel SSH approval or unlock request",
+  /!root\.sshAgentApprovalPopup/.test(sshApprovalInPanel)
+    && /sshPrompt !== null/.test(sshApprovalInPanel)
+    && /sshUnlockRequest !== null/.test(sshApprovalInPanel)
+    && /function settings\(\)[\s\S]{0,100}?sshApprovalInPanel\(\)\) return "busy"/.test(service)
+    && /function setup\(\)[\s\S]{0,100}?sshApprovalInPanel\(\)\) return "busy"/.test(service),
+  "an IPC navigation call can still hide a pending approval")
+const unlockVault = functionBody(service, "unlockVault")
+check("a second unlock cannot start over one in flight",
+  /isUnlocking \|\| unlockSubmitted/.test(unlockVault)
+    && /unlockProc\.running && !unlockPrewarmActive/.test(unlockVault),
+  unlockVault)
 check("nothing starts itself in an unattached vault",
   /running: root\.live && root\.lockOnSuspend/.test(service)
     && /running: root\.live && !root\.statusProbeStarted/.test(service),

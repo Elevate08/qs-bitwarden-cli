@@ -231,4 +231,199 @@ for (const how of ["queued", "waiting for the helper", "running"]) {
       && body.indexOf("pinUnlockSubmitted = false") < body.indexOf("cancelEnvelopeUnlockJobs()"))
 }
 
+// --- an exit belongs to the run that produced it (JS-1) ---------------------
+const vaultProcess = read("VaultProcess.qml")
+
+// The `function (...) { ... }` at or after `from`, braces balanced.
+function functionAt(src, from) {
+  const start = src.indexOf("function", from)
+  let depth = 0
+  for (let i = src.indexOf("{", start); i !== -1 && i < src.length; i++) {
+    if (src[i] === "{") depth++
+    else if (src[i] === "}" && --depth === 0) return src.slice(start, i + 1)
+  }
+  return ""
+}
+
+// VaultProcess's own start/finish/launchLocal/killLocal and its real
+// Process.onExited over a stand-in scope, so the run generations are exercised
+// rather than described.
+function makeVaultProcess(v, qt) {
+  const names = ["start", "runLocally", "launchLocal", "finish", "killLocal"]
+  const bodies = names.map(n => functionBody(vaultProcess, n))
+  if (bodies.some(b => !b)) throw new Error("VaultProcess is missing a run function")
+  const clock = qt || { callLater: f => f() }
+  const local = { running: false, exiting: false, launchedSeq: 0, command: [], environment: {},
+    stdinEnabled: false }
+  const proc = {
+    Model, vault: v, command: [], environment: {}, running: false, stdinText: "",
+    capture: "plain", session: false, inject: {}, sessionHeld: false,
+    outputHeld: false, runId: 0, finishing: false, startSeq: 0, runSeq: 0,
+    localSeq: 0, finishSeq: 0, exits: [],
+    stdout: { text: "", streamFinished() {} },
+    stderr: { text: "", streamFinished() {} },
+    started() {},
+    exited(code) { this.exits.push(code) }
+  }
+  const make = new Function("scope", "local", "Qt", "proc",
+    "with(scope){" + bodies.join("\n") + "\nreturn {"
+      + names.map(n => n + ": " + n).join(",") + "}}")
+  Object.assign(proc, make(proc, local, clock, proc))
+  proc.local = local
+
+  // The real handler, with the ids it uses (collectors) and the local
+  // Process's own properties in scope.
+  const exitAt = vaultProcess.indexOf("onExited: function(")
+  const exitBody = functionAt(vaultProcess, exitAt)
+  if (!exitBody) throw new Error("VaultProcess is missing local.onExited")
+  const localOut = { text: "" }
+  const localErr = { text: "" }
+  const exitScope = Object.create(proc)
+  Object.defineProperty(exitScope, "command", { get: () => local.command })
+  Object.defineProperty(exitScope, "launchedSeq", { get: () => local.launchedSeq })
+  Object.defineProperty(exitScope, "exiting", {
+    get: () => local.exiting,
+    set: value => { local.exiting = value }
+  })
+  const exit = new Function("scope", "local", "localOut", "localErr", "Qt", "proc",
+    "with(scope){ return (" + exitBody + ")}")(exitScope, local, localOut, localErr, clock, proc)
+  local.exit = code => exit(code, 0)
+  local.out = localOut
+  local.err = localErr
+  return proc
+}
+
+{
+  const v = vault({
+    vaultHelperState: "active", vaultHelperActive: true,
+    vaultRunSeq: 0, vaultRuns: {}, vaultWaiting: [], vaultQueries: {},
+    session: "", heldSessionMarker: Model.vaultHeldSession()
+  })
+  v.vaultHelperProc = { running: true, lines: [], write(line) { this.lines.push(line) } }
+  bind(v, ["vaultStart", "onVaultHelperLine"])
+  const proc = makeVaultProcess(v)
+
+  proc.running = true
+  proc.command = ["bw", "unlock", "A"]
+  proc.start()
+  const seqA = proc.runSeq
+  eq("run A is held with its own start generation", v.vaultRuns[1].seq, seqA)
+  eq("and with the process that started it", v.vaultRuns[1].proc === proc, true)
+
+  // A is cancelled, but its helper has not answered yet.
+  proc.running = false
+
+  proc.running = true
+  proc.command = ["bw", "unlock", "B"]
+  proc.start()
+  const seqB = proc.runSeq
+  check("run B has a newer generation than the cancelled run", seqB !== seqA, `${seqA} vs ${seqB}`)
+  eq("both runs stay held until their exits arrive", Object.keys(v.vaultRuns).length, 2)
+
+  const accepted = []
+  const acceptExit = () => {
+    if (proc.finishSeq === seqB) accepted.push(proc.stdout.text)
+  }
+
+  // A's delayed exit arrives after B started: it must be ignored, not
+  // finished against B.
+  v.onVaultHelperLine(JSON.stringify({ type: "exit", id: 1, code: 0,
+    out: "A-password", err: "", session: false, held: false }))
+  acceptExit()
+  eq("a cancelled run's delayed exit is not stamped on its replacement", proc.finishSeq === seqB, false)
+  eq("and it leaves the replacement's run held", proc.runId, 2)
+  eq("with the replacement still running", proc.running, true)
+  eq("its output is not accepted for the run that replaced it", accepted.length, 0)
+
+  // B's own exit is.
+  v.onVaultHelperLine(JSON.stringify({ type: "exit", id: 2, code: 0,
+    out: "B-password", err: "", session: false, held: false }))
+  acceptExit()
+  eq("the replacement's exit is stamped with its own generation", proc.finishSeq, seqB)
+  eq("and its output is accepted", JSON.stringify(accepted), JSON.stringify(["B-password"]))
+}
+
+// A delayed local exit belongs to the child that produced it, not to the run
+// that replaced it: a killed child still on its way out must not have a new
+// launch overwrite its generation, its exit must not clear the newer run, and
+// cancelling that newer run must still kill it (JS-1).
+{
+  const pending = []
+  const clock = { callLater: f => pending.push(f) }
+  const drain = () => { const now = pending.splice(0); now.forEach(f => f()) }
+  const v = vault()
+  v.vaultStart = p => p.runLocally({})
+  bind(v, ["vaultKill"])
+  const proc = makeVaultProcess(v, clock)
+
+  proc.running = true
+  proc.command = ["bw", "list", "A"]
+  proc.start()
+  const seqA = proc.runSeq
+  eq("a local run captures the generation it launched with", proc.local.launchedSeq, seqA)
+
+  // The caller cancels A while its child is still alive, then starts B before
+  // A's exit arrives.
+  v.vaultKill(proc)
+  eq("cancelling A marks its child as exiting", proc.local.exiting, true)
+  eq("A's child is asked to stop", proc.local.running, false)
+
+  proc.running = true
+  proc.command = ["bw", "list", "B"]
+  proc.start()
+  const seqB = proc.runSeq
+  check("the replacement has its own generation", seqB !== seqA, `${seqA} vs ${seqB}`)
+  drain()
+  eq("the replacement waits for the old child's exit", proc.local.running, false)
+  eq("so the old child's generation is still the one it will report", proc.local.launchedSeq, seqA)
+
+  // The old child's exit finally arrives through the real onExited handler.
+  proc.stdout.text = "B-output"
+  proc.local.out.text = "A-output"
+  proc.local.exit(0)
+  eq("a delayed old local exit leaves the newer run's runId", proc.runId, -1)
+  eq("and its running flag", proc.running, true)
+  eq("and its collector", proc.stdout.text, "B-output")
+  eq("and it emits no exit for the newer run", proc.exits.length, 0)
+
+  // The replacement then starts with its own generation.
+  drain()
+  eq("the replacement starts once the old child has exited", proc.local.running, true)
+  eq("with its own generation", proc.local.launchedSeq, seqB)
+  eq("and the newer run is still held", proc.runId, -1)
+  eq("with its collector untouched", proc.stdout.text, "B-output")
+
+  v.vaultKill(proc)
+  eq("cancelling the newer run still kills its local child", proc.local.running, false)
+  eq("and marks that child as exiting", proc.local.exiting, true)
+}
+
+function processBlock(id, next) {
+  return service.slice(service.indexOf("id: " + id), service.indexOf("id: " + next))
+}
+check("unlockProc compares the ended generation before accepting a submission",
+  /finishSeq !== root\.unlockExpectedSeq/.test(processBlock("unlockProc", "logoutProc")),
+  processBlock("unlockProc", "logoutProc"))
+check("statusProc ignores an exit from a cancelled probe",
+  /finishSeq !== root\.statusRunSeq/.test(processBlock("statusProc", "sessionHandoffProc")),
+  processBlock("statusProc", "sessionHandoffProc"))
+check("keyringLookupProc ignores an exit from a cancelled lookup",
+  /finishSeq !== root\.keyringLookupRunSeq/.test(processBlock("keyringLookupProc", "keyringStoreProc")),
+  processBlock("keyringLookupProc", "keyringStoreProc"))
+const runStatus = functionBody(service, "runStatusCheck")
+check("the status run captures its generation and process sequence when started",
+  /statusReadEpoch = vaultEpoch/.test(runStatus) && /statusRunSeq = statusProc\.startSeq/.test(runStatus),
+  runStatus)
+const beginRead = functionBody(service, "beginVaultRead")
+check("the item read captures its generation when started",
+  /listReadEpoch = vaultEpoch/.test(beginRead), beginRead)
+check("the handlers compare the captured generation, not the latest stamp",
+  /statusReadEpoch[\s\S]{0,200}?vaultEpoch/.test(statusFinished)
+    && /listReadEpoch[\s\S]{0,200}?vaultEpoch/.test(functionBody(service, "onListFinished")),
+  statusFinished)
+check("a locked-screen prewarm is not mistaken for a submitted unlock",
+  /unlockPrewarmActive/.test(functionBody(service, "prepareUnlock"))
+    && /unlockPrewarmActive = false/.test(functionBody(service, "unlockVaultWithPassword")),
+  functionBody(service, "prepareUnlock") + "\n" + functionBody(service, "unlockVaultWithPassword"))
+
 done()

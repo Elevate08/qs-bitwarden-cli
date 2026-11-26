@@ -107,6 +107,22 @@ const fallbacks = [
 for (const [key, why] of fallbacks) {
   check(`falls back to bw: ${why}`, Totp.generate(key, SDK_TIME) === null, JSON.stringify(Totp.generate(key, SDK_TIME)))
 }
+
+// A key can come from a shared item, and localTotp() runs on the GUI thread.
+// The length check comes before lowercasing, the character test or decoding,
+// so an oversized key costs no work and bw/the helper answers instead.
+const hugeKey = "A".repeat(8 * 1024 * 1024)
+const hugeStarted = Date.now()
+const hugeResult = Totp.generate(hugeKey, SDK_TIME)
+const hugeElapsed = Date.now() - hugeStarted
+check("falls back to bw: a multi-megabyte key", hugeResult === null, JSON.stringify(hugeResult))
+check("the oversized key is refused without decoding it", hugeElapsed < 100, `${hugeElapsed} ms`)
+check("decodeBase32 refuses an oversized secret on its own too",
+  Totp.decodeBase32(hugeKey) === null, "decoded")
+check("a key at the cap is still read, one character over is not",
+  Totp.parseKey("A".repeat(Totp.MAX_KEY_CHARS)) !== null
+    && Totp.parseKey("A".repeat(Totp.MAX_KEY_CHARS + 1)) === null,
+  `cap ${Totp.MAX_KEY_CHARS}`)
 check("SDK defaults apply to unreadable digits and period",
   code("otpauth://totp/x?secret=WQIQ25BRKZYCJVYP&digits=six&period=-5") === "194506"
     && code("otpauth://totp/x?secret=WQIQ25BRKZYCJVYP&digits=+6&period=+30") === "194506",
