@@ -3600,7 +3600,7 @@ Panel {
 
                       Text {
                         textFormat: Text.PlainText
-                        text: itemData.name
+                        text: itemData.displayName
                         color: root.fg
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.body
@@ -4173,7 +4173,7 @@ Panel {
 
                     Text {
                       textFormat: Text.PlainText
-                      text: root.vault.detailItem ? root.vault.detailItem.name : "Loading..."
+                      text: root.vault.detailItem ? root.vault.detailItem.displayName : "Loading..."
                       color: root.fg
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.title
@@ -4519,10 +4519,12 @@ Panel {
                       }
 
                       // The file name is vault text, so it is drawn as text.
+                      // `displayFileName` escapes bidi/zero-width characters;
+                      // `fileName` is the real stored name (download path).
                       Text {
                         textFormat: Text.PlainText
                         anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.fileName
+                        text: modelData.displayFileName
                         color: root.fg
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
@@ -5699,7 +5701,7 @@ Panel {
         // switch, and reopening it then would put its form over another
         // vault (or none).
         actionLabel: root.vault.status === "unlocked" && root.vault.failedSave
-          ? Model.plainLabel("Reopen " + Model.clipLabel(root.vault.failedSave.name, 24))
+          ? Model.plainLabel("Reopen " + Model.clipLabel(Model.visibleText(root.vault.failedSave.name), 24))
           : ""
         onActionRequested: root.vault.reopenFailedSave()
         onErrorDismissed: {

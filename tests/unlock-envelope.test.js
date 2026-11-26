@@ -244,14 +244,18 @@ function suite(realCreds) {
     eq(tag + "and lands the password given", open({ kind: "fingerprint" }).out, PASSWORD)
 
     // --- disabling ---
-    for (const op of [{ kind: "remove", method: "pin" }, { kind: "remove", method: "fingerprint" },
-      { kind: "remove", method: "fido", cred: CRED }]) {
+    for (const op of [{ kind: "remove", method: "pin" }, { kind: "remove", method: "fido", cred: CRED }]) {
       eq(tag + `removing ${op.method} needs no secret`, run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, op)).code, 0)
     }
+    // The fingerprint wrap holds the DEK in the clear, so removing only the
+    // wrap would keep the data key alive: the tool refuses, and turning the
+    // method off deletes the whole envelope instead (see "deleting" below).
+    eq(tag + "removing only the fingerprint wrap is refused",
+      run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "remove", method: "fingerprint" })).code, 2)
     eq(tag + "a removed PIN is missing, not wrong", open({ kind: "pin" }, { [PIN]: PIN_VALUE }).code, 7)
     s = summary()
-    check(tag + "only the master wrap is left", s.master && !s.pin && !s.fingerprint && s.fido.length === 0,
-      JSON.stringify(s))
+    check(tag + "PIN and FIDO are gone; fingerprint remains until it is deleted with the envelope",
+      s.master && !s.pin && s.fingerprint && s.fido.length === 0, JSON.stringify(s))
     eq(tag + "and it still opens", open({ kind: "master" }, { [SECRET]: PASSWORD }).out, PASSWORD)
 
     // --- migrating fingerprint unlock's plaintext entry ---
@@ -396,6 +400,22 @@ function suite(realCreds) {
     eq(tag + "clearing removes it", stored(), null)
     eq(tag + "and presence says so", run(Model.keyringHasEntryCommand(Model.KEYRING_ENVELOPE)).out.trim(), "no")
 
+    // --- deleting only the account that owns the slot's envelope ---
+    eq(tag + "deleting an absent envelope is the state wanted",
+      run(Model.unlockEnvelopeDeleteForAccountCommand(tool, ACCOUNT)).code, 0)
+    const OTHER_ACCOUNT = { id: "user-5678", server: "https://other.invalid" }
+    eq(tag + "another account's envelope is seeded in the same slot",
+      run(Model.unlockEnvelopeCreateCommand(tool, OTHER_ACCOUNT), { [SECRET]: PASSWORD },
+        Model.envelopeAccountEnv(OTHER_ACCOUNT)).code, 0)
+    const otherSealed = stored()
+    eq(tag + "the wrong account's delete is refused as another account",
+      run(Model.unlockEnvelopeDeleteForAccountCommand(tool, ACCOUNT)).code, 6)
+    eq(tag + "and that envelope is left intact", stored(), otherSealed)
+    eq(tag + "the owning account's delete clears it",
+      run(Model.unlockEnvelopeDeleteForAccountCommand(tool, OTHER_ACCOUNT),
+        {}, Model.envelopeAccountEnv(OTHER_ACCOUNT)).code, 0)
+    eq(tag + "and the slot is empty", stored(), null)
+
     // --- nothing secret in any argv ---
     const argv = fs.readFileSync(argvLog, "utf8")
     const secrets = { "the password": "horse", "the new password": NEW_PASSWORD, "the PIN": PIN_VALUE,
@@ -430,6 +450,7 @@ function suite(realCreds) {
     rotate: Model.unlockEnvelopeUpdateCommand("/t", ACCOUNT, { kind: "rotate", auth: { kind: "pin" } }),
     check: Model.unlockEnvelopeCheckCommand("/t", ACCOUNT),
     delete: Model.unlockEnvelopeUpdateCommand("/t", ACCOUNT, { kind: "delete" }),
+    deleteForAccount: Model.unlockEnvelopeDeleteForAccountCommand("/t", ACCOUNT),
     migrate: Model.legacyPinMigrationCommand("/t", ACCOUNT)
   }
   for (const [name, argv] of Object.entries(commands)) {
@@ -492,6 +513,11 @@ check("and names the slot's own entry",
   Model.unlockEnvelopeUpdateCommand("/t", Object.assign({ slot: "0123456789abcdef" }, ACCOUNT), { kind: "delete" })[2]
     .includes("'unlock_envelope@0123456789abcdef'")
     && !Model.unlockEnvelopeUpdateCommand("/t", ACCOUNT, { kind: "delete" })[2].includes("@"), "")
+check("the account-checked delete is refused on the same bad arguments",
+  refused(Model.unlockEnvelopeDeleteForAccountCommand("t", ACCOUNT))
+    && refused(Model.unlockEnvelopeDeleteForAccountCommand("/t", null))
+    && refused(Model.unlockEnvelopeDeleteForAccountCommand("/t", { id: "", server: "s" }))
+    && refused(Model.unlockEnvelopeDeleteForAccountCommand("/t", { id: "a", server: "s", slot: "../x" })), "")
 check("the startup repair refuses a relative plugin directory",
   refused(Model.keyringRepairCommand("plugin", [])), "")
 check("and looks only at well-formed slots, once each",

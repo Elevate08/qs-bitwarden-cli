@@ -268,6 +268,28 @@ for (const reason of ["old account", "old epoch", "logout"]) {
   eq(`${reason}: stale held result is not delivered`, accepted, 0)
   check(`${reason}: stale held result is forgotten`, v.forgotten.includes(name), v.forgotten.join())
 }
+// Both the automatic floor re-wrap and an add-method write print the new
+// envelope, which can hold a fingerprint wrap's DEK. Neither may leave it in
+// the QML collector.
+for (const [label, enqueue] of [
+  ["the automatic PIN re-wrap", v => v.rewrapPinAtFloor("synthetic-master", "123456")],
+  ["adding a quick-unlock method", v => v.addQuickUnlockMethod("synthetic-master", { kind: "add-pin" }, null, () => {})]
+]) {
+  const v = vault()
+  v.console = { log() {}, warn() {} }
+  bind(v, service, ["withEnvelopeAccount", "rewrapPinAtFloor", "addQuickUnlockMethod",
+    "addQuickUnlockMethodWith", "writeEnvelope"])
+  let scrubbed = 0
+  let scrubbedProc = null
+  v.clearProcessCollectorSoon = proc => { scrubbed++; scrubbedProc = proc }
+  enqueue(v)
+  const job = v.envelopeJob
+  check(`${label}: its output is treated as a secret`, job && job.secretOutput === true, JSON.stringify(job))
+  v.envelopeProc.running = false
+  v.onEnvelopeJobExited(0)
+  eq(`${label}: the collector is scrubbed after it exits`, scrubbed, 1)
+  check(`${label}: and it is the envelope process`, scrubbedProc === v.envelopeProc)
+}
 {
   const v = vault(); const later = []
   v.Qt.callLater = f => later.push(f)
@@ -425,6 +447,41 @@ for (const [label, summary, wantDelete, wantNote] of [
     eq(`forget ${label}: the summary is re-read once it lands`, v.refreshes, 1)
   }
 }
+// A below-floor PIN open keeps the PIN, or the helper's reference to it, only
+// until the unlock it enabled settles. Closing, locking, or a FIFO failure
+// abandons that unlock, so the kept PIN goes with it (QK-3).
+for (const abort of ["close", "lock", "FIFO failure"]) {
+  const v = vault()
+  Object.assign(v, {
+    sshAuthSurfaceActive: true, status: "locked", pinUnlockSubmitted: true, pinBusy: true,
+    pinEntry: "", heldPinName: "below-floor-pin", envelopeSummary: { pin: { m: 1, t: 1 } },
+    pinRewrapPin: "", pinAttempts: 0, pinFromEnvelope: false, pendingUnlockFrom: "",
+    isUnlocking: true, authPasswordWriteTarget: "unlock", authPasswordWriteValue: "",
+    authPasswordWriterProc: { running: false }, unlockProc: { running: false },
+    loginProc: { running: false }, errorMessage: "", pinentryMasterName: "",
+    currentScreen: "locked", fingerprintMessage: "", fingerprintError: "",
+    revealedFields: {}, showDeleteConfirm: false, totpFollowupActive: false,
+    pendingSecondFactorLogin() { return false },
+    abandonAuthSecrets() {}, abandonPinSetup() {}, abandonFingerprintSetup() {},
+    cancelFingerprintUnlock() {}, releaseFidoUnlock() {}, cancelAttachmentDownloads() {},
+    stopGeneratorServe() {}, clearSearch() {}, eachView() {}, closeFilterGroup() {},
+    clearClipboard() {}, applySshAgentLifecycle() {}, requestBwLock() {},
+    requestSessionCredentialClear() {}, dropVaultState() {}, flashNotification() {},
+    focusAppropriateField() {}, armPresenceUnlock() {}, prepareUnlock() {}
+  })
+  bind(v, service, ["pinWrapBelowFloor", "cancelAuthPrewarm", "close", "lockVault",
+    "onAuthPasswordWriterExited"])
+  v.onEnvelopePinResult(0, Model.heldSecretRef("envelope-password"))
+  eq(`${abort}: a below-floor PIN open keeps its PIN for the re-wrap`,
+    v.pinRewrapPin, Model.heldSecretRef("below-floor-pin"))
+  if (abort === "close") v.close()
+  else if (abort === "lock") v.lockVault()
+  else v.onAuthPasswordWriterExited(1)
+  eq(`${abort}: the abandoned PIN reference is cleared`, v.pinRewrapPin, "")
+  check(`${abort}: and the helper-held PIN is forgotten`,
+    v.forgotten.includes("below-floor-pin"), v.forgotten.join())
+}
+
 // Execute the real purge builder with a synthetic keyring executable. The
 // real secret-tool is unreachable even if the tested script is incorrect.
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-purge-regression-"))

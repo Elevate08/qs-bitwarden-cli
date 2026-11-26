@@ -464,6 +464,23 @@ check("unlocking promotes the held request straight to an approval",
 check("the promotion happens as soon as the vault unlocks",
   /onStatusChanged:[\s\S]{0,200}?promoteUnlockToApproval\(\)/.test(panelSrc),
   "nothing promotes on unlock")
+check("a promoted card knows it is still waiting for its own request id",
+  /sshPromotedOldId/.test(approvalScreenSrc) && /awaitingAdoption/.test(approvalScreenSrc),
+  "the approval screen does not read the promotion state")
+check("Approve (once and grant) waits for adoption, while Deny stays available",
+  /enabled: screen\.armed && !screen\.awaitingAdoption/.test(approvalScreenSrc)
+    && (approvalScreenSrc.match(/enabled: screen\.armed && !screen\.awaitingAdoption/g) || []).length === 2
+    && /onClicked: vault\.denySshRequest\(\)/.test(approvalScreenSrc),
+  approvalScreenSrc)
+check("the service refuses an approve sent before adoption",
+  /function approveSshRequest[\s\S]{0,320}?sshPromotedOldId !== null/.test(panelSrc),
+  panelSrc.slice(panelSrc.indexOf("function approveSshRequest"), panelSrc.indexOf("function approveSshRequest") + 500))
+const settingsScreenSrc = read("SshAgentSettings.qml")
+check("active approvals identify the grant by path and fingerprint, not only basename",
+  /modelData\.processPath/.test(settingsScreenSrc) && /shortPath/.test(settingsScreenSrc)
+    && /modelData\.fingerprint/.test(settingsScreenSrc) && /shortFingerprint/.test(settingsScreenSrc)
+    && /wrapMode: Text\.NoWrap/.test(settingsScreenSrc),
+  settingsScreenSrc.slice(settingsScreenSrc.indexOf("ACTIVE APPROVALS"), settingsScreenSrc.indexOf("Revoke All Approvals")))
 // The panel root reaches the screens as `root` and the extracted files as
 // `panel`, so the object is matched either way -- a check pinned to one of
 // them starts passing or failing on which file the markup sits in.

@@ -13,6 +13,10 @@ var BASE32_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 var STEAM_CHARS = "23456789BCDFGHJKMNPQRTVWXY"
 var DEFAULT_DIGITS = 6
 var DEFAULT_PERIOD = 30
+// A real TOTP key is a few dozen characters. The key comes from a vault item,
+// possibly shared by someone else, and parseKey() runs on the GUI thread; a
+// multi-megabyte one is not a key, so it is left to bw without being read.
+var MAX_KEY_CHARS = 4096
 
 // { code, period } for `key` at `nowMs`, or null when bw has to answer.
 function generate(key, nowMs) {
@@ -26,16 +30,22 @@ function generate(key, nowMs) {
 // { algorithm: "sha1" | "sha256" | "steam", digits, period, secret: bytes }.
 function parseKey(key) {
   if (typeof key !== "string" || key === "") return null
+  // Checked before lowercasing or decoding anything, so an oversized key costs
+  // one length read. bw/the helper answers instead.
+  if (key.length > MAX_KEY_CHARS) return null
   // Unicode case rules are where Rust and JS could part ways.
   if (/[^\x00-\x7f]/.test(key)) return null
   var k = key.toLowerCase()
 
   if (k.indexOf("otpauth://") === 0) return parseOtpauth(k)
   if (k.indexOf("steam://") === 0) {
-    return { algorithm: "steam", digits: 5, period: DEFAULT_PERIOD,
-      secret: decodeBase32(k.slice("steam://".length)) }
+    var steamSecret = decodeBase32(k.slice("steam://".length))
+    if (!steamSecret) return null
+    return { algorithm: "steam", digits: 5, period: DEFAULT_PERIOD, secret: steamSecret }
   }
-  return { algorithm: "sha1", digits: DEFAULT_DIGITS, period: DEFAULT_PERIOD, secret: decodeBase32(k) }
+  var secret = decodeBase32(k)
+  if (!secret) return null
+  return { algorithm: "sha1", digits: DEFAULT_DIGITS, period: DEFAULT_PERIOD, secret: secret }
 }
 
 function parseOtpauth(k) {
@@ -74,7 +84,9 @@ function parseOtpauth(k) {
   var period = parseU32(parts.period)
   period = period === null ? DEFAULT_PERIOD : Math.max(period, 1)
 
-  return { algorithm: algorithm, digits: digits, period: period, secret: decodeBase32(parts.secret) }
+  var secret = decodeBase32(parts.secret)
+  if (!secret) return null
+  return { algorithm: algorithm, digits: digits, period: period, secret: secret }
 }
 
 // application/x-www-form-urlencoded, as the SDK's query_pairs() reads it.
@@ -97,6 +109,9 @@ function parseU32(v) {
 // Not strict base32, on purpose: the SDK drops every character outside the
 // alphabet and discards trailing bits that do not fill a byte.
 function decodeBase32(s) {
+  // The same ceiling as parseKey(), for a secret that reaches this directly
+  // (one inside an otpauth URI, or a future caller). null means "not ours".
+  if (String(s).length > MAX_KEY_CHARS) return null
   var upper = String(s).toUpperCase()
   var bytes = []
   var buffer = 0

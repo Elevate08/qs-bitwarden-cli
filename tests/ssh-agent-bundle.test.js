@@ -310,6 +310,20 @@ inTemp(dir => {
   eq("so the shipped helper is refused", result.state, "checksum-mismatch")
 })
 
+// A deleted SHA256SUMS must not turn every shipped helper into a silent
+// checksum=unchecked/state=ok. It is its own refused state.
+inTemp(dir => {
+  const target = path.join(dir, "bin", HOST_DIR)
+  fs.mkdirSync(target, { recursive: true })
+  fs.copyFileSync(bundled, path.join(target, "qs-bitwarden-ssh-agent"))
+  fs.chmodSync(path.join(target, "qs-bitwarden-ssh-agent"), 0o755)
+  const result = inspect(dir)
+  eq("a missing checksum file is reported as missing, not unchecked", result.checksum, "missing")
+  eq("so the shipped helper is refused", result.state, "checksum-missing")
+  eq("and the feature stays off", Model.helperReady(result), false)
+  check("the message names the missing checksum file", /SHA256SUMS/.test(result.message), result.message)
+})
+
 // The settings diagnostics live in SshAgentSettings.qml; the supervision that
 // feeds them is still in Panel.qml. Both, or a check lands on whichever half
 // happens to hold its pattern today.

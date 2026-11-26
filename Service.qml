@@ -717,6 +717,18 @@ Item {
   // it so answers for a vault no longer open are dropped (vaultReadIsStale()).
   property int vaultEpoch: 0
   property var readEpochs: ({})
+  // The generation each in-flight read was started under, so its answer is
+  // judged against that rather than a newer read's stamp (JS-1).
+  property int statusReadEpoch: -1
+  property int listReadEpoch: -1
+  // The VaultProcess startSeq each run belongs to, so a delayed exit from a
+  // cancelled run is not taken for the current one (JS-1).
+  property int statusRunSeq: 0
+  property int keyringLookupRunSeq: 0
+  property int unlockExpectedSeq: 0
+  // True while `unlockProc` is only the prewarmed `bw unlock`, not a
+  // submission: `unlockVault()` must still accept the typed password then.
+  property bool unlockPrewarmActive: false
 
   // Processes whose collectors still need emptying after a lock; see
   // scrubSecretBuffers().
@@ -1133,12 +1145,13 @@ Item {
       vaultHelperSettleTimer.restart()
       flushVaultWaiting()
     } else if (message.type === "exit") {
-      var proc = vaultRuns[message.id]
-      if (!proc) return
+      var run = vaultRuns[message.id]
+      if (!run) return
       var runs = Object.assign({}, vaultRuns)
       delete runs[message.id]
       vaultRuns = runs
-      proc.finish(Number(message.code), message.out, message.err, message.session === true, message.held === true)
+      run.proc.finish(Number(message.code), message.out, message.err, message.session === true,
+        message.held === true, run.seq)
     } else if (message.type === "result") {
       var done = vaultQueries[message.q]
       if (!done) return
@@ -1187,7 +1200,12 @@ Item {
     }
     var runs = vaultRuns
     vaultRuns = ({})
-    for (var id in runs) runs[id].finish(1, "", "the vault helper stopped", false, false)
+    for (var id in runs) {
+      var run = runs[id]
+      // Not `runs[id].finish(...)`: the entry holds the run's own seq, so a
+      // delayed exit cannot borrow the generation of the run that replaced it.
+      run.proc.finish(1, "", "the vault helper stopped", false, false, run.seq)
+    }
     var queries = vaultQueries
     vaultQueries = ({})
     for (var q in queries) queries[q](false, null)
@@ -1228,7 +1246,11 @@ Item {
     if (!vaultHelperActive) {
       // What was typed into pinentry would come back to the shell: not run.
       if (proc.capture.indexOf("pinentry:") === 0) {
-        Qt.callLater(function() { proc.finish(Model.pinentryExitCodes().missing, "", "no vault helper", false, false) })
+        // This start's sequence: a restart must not catch the callback instead.
+        var seq = proc.runSeq
+        Qt.callLater(function() {
+          proc.finish(Model.pinentryExitCodes().missing, "", "no vault helper", false, false, seq)
+        })
         return
       }
       proc.runLocally(vaultLocalEnv(environment, inject))
@@ -1237,7 +1259,7 @@ Item {
     vaultRunSeq += 1
     var id = vaultRunSeq
     var runs = Object.assign({}, vaultRuns)
-    runs[id] = proc
+    runs[id] = { proc: proc, seq: proc.runSeq }
     vaultRuns = runs
     proc.runId = id
     vaultHelperProc.write(Model.vaultExecLine(id, proc.command, environment, inject, proc.capture, proc.stdinText))
@@ -1402,6 +1424,9 @@ Item {
   property bool fidoFromEnvelope: false
   // The PIN that decrypted a legacy blob, held until that unlock settles.
   property string pendingPinForMigration: ""
+  // A PIN whose wrap is below the current Argon2 floor, kept (as a value or a
+  // held reference) until the successful unlock can re-wrap it (QK-3).
+  property string pinRewrapPin: ""
 
   function inspectQuickUnlockPrereqs() {
     if (!quickUnlockPrereqProc.running) quickUnlockPrereqProc.running = true
@@ -1587,7 +1612,10 @@ Item {
       if (Date.now() - Number(quickUnlockEnabledAt[c.method] || 0) < quickUnlockEnableGraceMs) continue
       var key = activeSlot + ":" + c.method
       if (reconciledMethods[key]) continue
-      queueQuickUnlockPurge([activeSlot], c.method, key)
+      // A shared setting turned off applies to every account, even one the
+      // user never opens again (QK-2).
+      var slots = typeof accountSlotsForPurge === "function" ? accountSlotsForPurge() : [activeSlot]
+      queueQuickUnlockPurge(slots, c.method, key)
     }
   }
 
@@ -1595,10 +1623,12 @@ Item {
   // onDone(exitCode, stdout) }. `env` holds secrets and is dropped on start.
   function queueEnvelopeJob(job) {
     // Answers for an account no longer active are dropped (onEnvelopeJobExited()).
-    job.slot = activeSlot
+    // A cleanup that names the account its operation began for keeps that
+    // account and slot, rather than adopting whichever is active now.
+    if (job.slot === undefined) job.slot = activeSlot
     job.epoch = vaultEpoch
     // The tool reads the account from the environment, not argv.
-    job.accountEnv = Model.envelopeAccountEnv(envelopeAccount())
+    if (!job.accountEnv) job.accountEnv = Model.envelopeAccountEnv(envelopeAccount())
     var jobs = envelopeJobs.slice()
     jobs.push(job)
     envelopeJobs = jobs
@@ -1717,6 +1747,8 @@ Item {
     legacyPinStored = false
     pinFromEnvelope = false
     pendingPinForMigration = ""
+    forgetHeldPassword(root.pinRewrapPin)
+    root.pinRewrapPin = ""
     fidoFromEnvelope = false
   }
 
@@ -1877,9 +1909,10 @@ Item {
       || (Array.isArray(envelopeSummary.fido) && envelopeSummary.fido.length > 0))
   }
 
-  function writeEnvelope(command, env, done, quiet) {
+  function writeEnvelope(command, env, done, quiet, options) {
     queueEnvelopeJob({
       command: command, env: env, writes: true,
+      alwaysDone: Boolean(options && options.alwaysDone),
       onDone: function(code) {
         if (code !== 0 && (!quiet || quiet.indexOf(code) === -1)) {
           console.log("qs-bitwarden envelope: write failed with " + code)
@@ -1894,16 +1927,18 @@ Item {
   // anew; `op` (the add) is authorized by it opening the master wrap. With no
   // envelope, `bw` checks it, it is stored as an accepted password, then the
   // method is added.
-  function addQuickUnlockMethod(password, op, extraEnv, done) {
+  function addQuickUnlockMethod(password, op, extraEnv, done, options) {
     addQuickUnlockMethodWith(password, function(tool, account) {
       return Model.unlockEnvelopeUpdateCommand(tool, account, op)
-    }, extraEnv, done)
+    }, extraEnv, done, options)
   }
 
   // The same, for a method whose command is more than an update (FIDO2
-  // touches the key first). `done(ok, why, exitCode)`.
-  function addQuickUnlockMethodWith(password, makeCommand, extraEnv, done) {
+  // touches the key first). `done(ok, why, exitCode)`. `options.alwaysDone`
+  // keeps the completion, and so a captured-account cleanup, after a switch.
+  function addQuickUnlockMethodWith(password, makeCommand, extraEnv, done, options) {
     var pw = String(password || "")
+    var alwaysDone = Boolean(options && options.alwaysDone)
     if (!quickUnlockAvailable) { done(false, "unavailable", 0); return }
     withEnvelopeAccount(function() {
       var env = {}
@@ -1911,7 +1946,8 @@ Item {
       if (extraEnv) for (var k in extraEnv) env[k] = extraEnv[k]
       var command = makeCommand(root.envelopeTool(), root.envelopeAccount())
       root.queueEnvelopeJob({
-        command: command, env: env, writes: true,
+        command: command, env: env, secretOutput: true, writes: true,
+        alwaysDone: alwaysDone,
         onDone: function(code) {
           var E = Model.envelopeExitCodes()
           if (code === 0) { root.refreshEnvelope(); done(true, "", 0); return }
@@ -1930,7 +1966,7 @@ Item {
               if (extraEnv) for (var k2 in extraEnv) again[k2] = extraEnv[k2]
               root.writeEnvelope(command, again, function(added, addCode) {
                 done(added, added ? "" : "failed", added ? 0 : addCode)
-              })
+              }, undefined, { alwaysDone: alwaysDone })
             })
           })
         }
@@ -1982,6 +2018,27 @@ Item {
     // No envelope, or no such method in it, is the state removal wanted.
     writeEnvelope(Model.unlockEnvelopeUpdateCommand(envelopeTool(), envelopeAccount(), op), {}, null,
       [Model.envelopeExitCodes().absent, 7])
+  }
+
+  // Deletes the whole envelope of the account and slot an operation began
+  // for, even if another account is active by the time it lands. A cancelled
+  // fingerprint enrolment exposes the data key of the envelope it wrote, so
+  // that envelope, not the active one's, must go (QK-1). A slot reused by
+  // another account by then is left alone: only an envelope whose account
+  // matches the captured one is deleted.
+  function deleteEnvelopeForAccount(account, slot) {
+    if (!quickUnlockAvailable || !account || !account.id) return
+    var target = { id: String(account.id), server: String(account.server || ""),
+      slot: Model.isAccountSlot(slot) ? slot : account.slot }
+    queueEnvelopeJob({
+      command: Model.unlockEnvelopeDeleteForAccountCommand(envelopeTool(), target),
+      env: {}, writes: true,
+      kind: "delete",
+      slot: target.slot,
+      accountEnv: Model.envelopeAccountEnv(target),
+      alwaysDone: true,
+      onDone: function() { root.refreshEnvelope() }
+    })
   }
 
   // Migrates the legacy PIN blob at the PIN unlock that decrypted it; the blob
@@ -2572,6 +2629,14 @@ Item {
     return true
   }
 
+  // A signing request or unlock request the panel is showing (not one in its
+  // own popup): the screen it owns must not be replaced by an IPC navigation
+  // call.
+  function sshApprovalInPanel() {
+    return !root.sshAgentApprovalPopup
+      && (root.sshPrompt !== null || root.sshUnlockRequest !== null)
+  }
+
   function showSshApproval(message) {
     root.sshPrompt = Model.sshAgentPromptView(message, root.sshAgentApprovalWindowSec)
     if (startSshPromptClock()) return
@@ -2672,6 +2737,10 @@ Item {
 
   function approveSshRequest(grantSeconds) {
     if (!sshPrompt) return
+    // A card promoted from unlock_required still carries the unlock id until
+    // the helper's own approval_required is adopted; approving it would be a
+    // no-op (UI-4).
+    if (root.sshPromotedOldId !== null && root.sshPromotedOldId !== undefined) return
     sshAgentWrite(Model.sshAgentApproveLine(sshPrompt.requestId, grantSeconds))
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "approved", Date.now())
     noteSshCooldown()
@@ -3214,13 +3283,19 @@ Item {
     // The user asking for the panel while pinentry is up: the panel wins.
     cancelPinentry()
     pinentryReturning = false
+    isUnlocking = false
+    openFromIpc(view)
+  }
+
+  // The non-auth half of open(): used by IPC so a local caller cannot dismiss
+  // a pinentry or reset the unlock guard (UI-1, JS-8).
+  function openFromIpc(view) {
     errorMessage = ""
     flashMessage = ""
     revealedFields = ({})
     cursorActive = true
     showDeleteConfirm = false
     totpFollowupActive = false
-    isUnlocking = false
     suggestionsDismissed = false
     fingerprintMessage = ""
     fingerprintError = ""
@@ -3551,6 +3626,7 @@ Item {
       beginEpochOperation("keyringLookup")
       keyringLookupProc.command = Model.keyringLookupCommand(activeSlot)
       keyringLookupProc.running = true
+      keyringLookupRunSeq = keyringLookupProc.startSeq
     } else {
       runStatusCheck()
     }
@@ -3586,8 +3662,10 @@ Item {
     }
     statusCheckAuthoritative = authoritative !== false
     beginEpochOperation("status")
+    statusReadEpoch = vaultEpoch
     statusProc.command = Model.statusCommand()
     statusProc.running = true
+    statusRunSeq = statusProc.startSeq
   }
 
   // An authentication the user has actually submitted, still running.
@@ -3624,6 +3702,12 @@ Item {
   }
 
   function onStatusFinished(rawJson) {
+    // Judge the answer against the generation stamped when this run started.
+    if (typeof statusReadEpoch !== "undefined"
+        && Number(statusReadEpoch) !== Number(vaultEpoch)) {
+      restartStaleStatusProbe()
+      return
+    }
     if (epochOperationIsStale("status")) {
       restartStaleStatusProbe()
       return
@@ -3912,16 +3996,25 @@ Item {
   }
 
   function prepareUnlock() {
-    if (!sshAuthSurfaceActive || status !== "locked" || unlockProc.running) return
+    if (!sshAuthSurfaceActive || status !== "locked" || unlockProc.running || unlockSubmitted) return
     unlockSubmitted = false
+    // A password already held means this is a submission, not just the
+    // prewarm the lock screen starts.
+    unlockPrewarmActive = pendingUnlockPassword === ""
     unlockProc.command = Model.unlockPrewarmCommand()
     unlockProc.running = true
+    unlockExpectedSeq = unlockProc.startSeq
   }
 
   function cancelAuthPrewarm() {
+    // A PIN kept to re-wrap a below-floor wrap belongs to the unlock being
+    // abandoned; no success path runs this, so its re-wrap still gets it.
+    forgetHeldPassword(root.pinRewrapPin)
+    root.pinRewrapPin = ""
     authPasswordWriteTarget = ""
     authPasswordWriteValue = ""
     unlockSubmitted = false
+    unlockPrewarmActive = false
     loginSubmitted = false
     loginSubmitAfterPrewarmStop = false
     loginPrepareAfterPrewarmStop = false
@@ -3957,6 +4050,9 @@ Item {
     masterPassword = ""
     // Also dropped when the panel closes; see dropVaultSecrets().
     rotationOldPassword = ""
+    // Defence in depth: cancelAuthPrewarm() already drops it on every abort.
+    forgetHeldPassword(root.pinRewrapPin)
+    root.pinRewrapPin = ""
     clearLoginAttempt()
     pinentryMasterName = ""
     forgetHeldPassword(pendingUnlockPassword)
@@ -3988,6 +4084,8 @@ Item {
     if (!target) return
 
     if (target === "unlock") {
+      // The unlock the below-floor PIN was kept for is over.
+      cancelAuthPrewarm()
       unlockSubmitted = false
       isUnlocking = false
       pinentryMasterName = ""
@@ -5130,8 +5228,21 @@ Item {
     var accepting = pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"
     pinUnlockSubmitted = false
     pinBusy = false
-    // The PIN has done its work, right or wrong.
-    var viaPinentry = releaseHeldPin()
+    var heldPin = heldPinName
+    var viaPinentry = heldPin !== ""
+    forgetHeldPassword(root.pinRewrapPin)
+    root.pinRewrapPin = ""
+    // The PIN has done its work, right or wrong, but a wrap below the
+    // current floor needs it once more after the unlock succeeds (QK-3).
+    var keepPin = accepting && code === 0 && out
+      && typeof pinWrapBelowFloor === "function" && pinWrapBelowFloor(envelopeSummary)
+    if (keepPin) {
+      root.pinRewrapPin = heldPin ? Model.heldSecretRef(heldPin) : String(pinEntry || "")
+      // Its last use is the re-wrap now; forget it there.
+      if (viaPinentry) heldPinName = ""
+    } else if (viaPinentry) {
+      releaseHeldPin()
+    }
     if (!accepting) { forgetHeldPassword(out); return }
     if (code === 0 && out) {
       pinAttempts = 0
@@ -5148,6 +5259,55 @@ Item {
     pinEntry = ""
     pinUnlockError = "Could not read the stored password. Unlock with your master password."
     refreshEnvelope()
+  }
+
+  // A PIN wrap may predate the higher PIN floor: it still opens, but is
+  // cheaper to guess than the panel promises (QK-3).
+  function pinWrapBelowFloor(summary) {
+    var pin = summary && summary.pin
+    if (!pin) return false
+    var floor = Model.ENVELOPE_ARGON2 || { m: 262144, t: 4 }
+    return Number(pin.m || 0) < Number(floor.m) || Number(pin.t || 0) < Number(floor.t)
+  }
+
+  // Re-wrap the PIN at the current floor with the password the envelope just
+  // yielded. Non-fatal: the unlock has already succeeded, and a failure only
+  // leaves the old wrap (and says so).
+  function rewrapPinAtFloor(masterPassword, pin) {
+    var master = masterPassword
+    var pinValue = pin
+    var finish = function() {
+      root.forgetHeldPassword(master)
+      root.forgetHeldPassword(pinValue)
+      root.pinRewrapPin = ""
+    }
+    if (!quickUnlockAvailable || !accountId || !master || !pinValue) {
+      forgetHeldPassword(master)
+      finish()
+      return
+    }
+    var env = {}
+    env[Model.keyringSecretEnvVar()] = master
+    env[Model.pinEnvVar()] = pinValue
+    withEnvelopeAccount(function() {
+      queueEnvelopeJob({
+        command: Model.unlockEnvelopeUpdateCommand(envelopeTool(), envelopeAccount(), { kind: "add-pin" }),
+        env: env, secretOutput: true, writes: true,
+        onCancelled: finish,
+        onDone: function(code) {
+          // The password and PIN have done their last job.
+          finish()
+          if (code !== 0) {
+            console.warn("qs-bitwarden envelope: re-wrapping the PIN at the current floor failed (" + code + ")")
+            root.flashNotification("Could not update the stored PIN's cost. Turn PIN unlock off and on again to retry.")
+          }
+          root.refreshEnvelope()
+        }
+      })
+    }, function() {
+      root.forgetHeldPassword(master)
+      finish()
+    })
   }
 
   function countWrongPin() {
@@ -5728,14 +5888,27 @@ Item {
     fpSetupActive = true
     var typed = fpSetupMaster
     fpSetupMaster = ""
+    // The enrolment belongs to the account it starts for; a switch before it
+    // lands must not move the stale-cleanup delete to whichever is active
+    // then (QK-1).
+    var setupAccount = root.envelopeAccount()
+    var setupSlot = root.activeSlot
     beginEpochOperation("fingerprintAdd")
+    // The add's success may land after a switch. It must still reach the
+    // captured account's delete, which takes back the DEK-bearing wrap.
     addQuickUnlockMethod(typed, { kind: "add-fingerprint" }, null, function(ok, why) {
       typed = ""
       root.fpBusy = false
-      // Stale by the time it landed: remove the unwanted wrap.
+      // Stale by the time it landed: the wrap holds the envelope's data key
+      // in the clear, so delete the whole envelope rather than just the wrap
+      // (QK-1).
       if (root.epochOperationIsStale("fingerprintAdd") || !root.fpSetupActive) {
         root.fpSetupActive = false
-        if (ok) root.removeQuickUnlockMethod({ kind: "remove", method: "fingerprint" })
+        // Not removeQuickUnlockMethod({ kind: "remove", method: "fingerprint" }):
+        // the wrap holds the envelope's data key in the clear, so deleting the
+        // whole envelope is the only removal that does not leave it behind.
+        // The account is the one this setup began for, not the active one.
+        if (ok) root.deleteEnvelopeForAccount(setupAccount, setupSlot)
         return
       }
       root.fpSetupActive = false
@@ -5751,7 +5924,7 @@ Item {
       root.writeSetting("fingerprintUnlock", true, "bool")
       root.flashNotification("Fingerprint unlock enabled")
       root.currentScreen = "settings"
-    })
+    }, { alwaysDone: true })
   }
 
   // The fingerprint wrap holds the envelope's data key in the clear, and the
@@ -5790,7 +5963,11 @@ Item {
       // Unconditional: fingerprintStored also goes false when the reader or
       // fprintd is missing, and a way in may still be stored.
       if (!started || !accountsLoaded) {
+        // Clear this account's UI now, and purge every account once the
+        // account list and unlock tool are ready (QK-1, QK-2). This branch
+        // used to delete only the active account's envelope.
         forgetFingerprintUnlock()
+        purgeQuickUnlockMethod("fingerprint")
         return
       }
       // Every account's envelope that has the wrap, and its legacy copy, not
@@ -6126,6 +6303,13 @@ Item {
   // -------------------------------------------------------------------------
 
   function unlockVault() {
+    // Defence in depth: IPC must not reset the guard and get a second submit
+    // into an unlock already running. The lock screen's prewarm is not a
+    // submission, so it is allowed through.
+    if (isUnlocking || unlockSubmitted || (unlockProc.running && !unlockPrewarmActive)) {
+      errorMessage = "Unlock already in progress."
+      return
+    }
     // No `bw unlock` is waiting until status says locked (it is "checking"
     // for a few seconds after a start); the typed text is kept.
     if (status !== "locked") {
@@ -6150,12 +6334,16 @@ Item {
     // prewarmed unlockProc never sees it).
     pendingUnlockPassword = p
     prepareUnlock()
+    // The prewarm this reuses (or the run it starts) is now the submission.
+    unlockExpectedSeq = unlockProc.startSeq
+    unlockPrewarmActive = false
     unlockSubmitted = true
     writeAuthPassword("unlock", p)
   }
 
   function onUnlockOutput(stdoutText, stderrText, exitCode) {
     isUnlocking = false
+    unlockPrewarmActive = false
     var out = String(stdoutText || "").trim()
     var err = String(stderrText || "").trim()
 
@@ -6174,6 +6362,8 @@ Item {
       fingerprintFromEnvelope = false
       pinFromEnvelope = false
       fidoFromEnvelope = false
+      forgetHeldPassword(root.pinRewrapPin)
+      root.pinRewrapPin = ""
       errorMessage = "Could not deliver the password to Bitwarden. Please try again."
       Qt.callLater(prepareUnlock)
     } else {
@@ -6181,6 +6371,9 @@ Item {
       // and asked for again. Any other failure is shown as it is.
       var askAgain = pinentryMasterName !== "" && Model.isWrongMasterPassword(err)
       pinentryMasterName = ""
+      // A re-wrap waiting on this unlock cannot run now.
+      forgetHeldPassword(root.pinRewrapPin)
+      root.pinRewrapPin = ""
       var fromEnvelope = (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope)
         || (pendingUnlockFrom === "pin" && pinFromEnvelope)
         || (pendingUnlockFrom === "fido" && fidoFromEnvelope)
@@ -6290,6 +6483,8 @@ Item {
     if (!s) {
       forgetHeldPassword(pendingUnlockPassword)
       forgetHeldPassword(pendingPinForMigration)
+      forgetHeldPassword(root.pinRewrapPin)
+      root.pinRewrapPin = ""
       errorMessage = "Unlock did not return a session key"
       return
     }
@@ -6321,8 +6516,16 @@ Item {
     // the re-seal above, which forgets it when it ends.
     if (pendingUnlockFrom === "pin" && !pinFromEnvelope && pendingPinForMigration && pendingUnlockPassword) {
       migrateLegacyPin(pendingUnlockPassword, pendingPinForMigration)
+    } else if (pendingUnlockFrom === "pin" && pinFromEnvelope
+               && pendingUnlockPassword && root.pinRewrapPin
+               && typeof rewrapPinAtFloor === "function") {
+      // The wrap that just opened was below the current PIN floor: re-wrap it
+      // now, with the PIN and password still in hand (QK-3).
+      rewrapPinAtFloor(pendingUnlockPassword, root.pinRewrapPin)
     } else {
       if (pendingUnlockFrom !== "") forgetHeldPassword(pendingUnlockPassword)
+      forgetHeldPassword(root.pinRewrapPin)
+      root.pinRewrapPin = ""
       forgetHeldPassword(pendingPinForMigration)
     }
     pendingPinForMigration = ""
@@ -6641,6 +6844,9 @@ Item {
 
   function beginVaultRead(name) {
     beginEpochOperation(name)
+    // The item read's handler compares this captured value, not readEpochs
+    // at arrival, which a newer read may already have replaced.
+    if (name === "items") listReadEpoch = vaultEpoch
   }
 
   function vaultReadIsStale(name) {
@@ -6744,6 +6950,7 @@ Item {
 
   function onListFinished(rawJson) {
     isLoading = false
+    if (typeof listReadEpoch !== "undefined" && Number(listReadEpoch) !== Number(vaultEpoch)) return
     if (vaultReadIsStale("items")) return
     // One parse for both: parsing the list once per consumer cost several
     // whole-vault parses on the GUI thread per load.
@@ -9148,6 +9355,12 @@ Item {
         root.onStatusProbeProcessFreed()
         return
       }
+      // A cancelled probe's delayed exit belongs to the run it started, not
+      // to whatever started since.
+      if (statusProc.finishSeq !== root.statusRunSeq) {
+        root.onStatusProbeProcessFreed()
+        return
+      }
       root.onStatusFinished(exitCode === 0 ? statusStdout.text : "")
       if (root.statusCheckQueued) {
         root.statusCheckQueued = false
@@ -9189,6 +9402,10 @@ Item {
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(keyringLookupProc)) {
+        root.onStatusProbeProcessFreed()
+        return
+      }
+      if (keyringLookupProc.finishSeq !== root.keyringLookupRunSeq) {
         root.onStatusProbeProcessFreed()
         return
       }
@@ -9786,9 +10003,13 @@ Item {
         return
       }
       if (!root.unlockSubmitted) {
+        root.unlockPrewarmActive = false
         root.clearProcessCollectorSoon(unlockProc)
         return
       }
+      // The submission reused, or started, this run; an exit from an earlier
+      // prewarm must not be read as its answer.
+      if (unlockProc.finishSeq !== root.unlockExpectedSeq) return
       root.unlockSubmitted = false
       root.onUnlockOutput(unlockStdout.text, unlockStderr.text, exitCode)
     }
@@ -10022,13 +10243,22 @@ Item {
   IpcHandler {
     target: "io.github.elevate08.qs-bitwarden-cli"
     enabled: root.live
-    function open(): void { root.open() }
+    function open(): void { root.openFromIpc() }
     function close(): void { root.close() }
-    function toggle(): void { root.toggle() }
+    function toggle(): void {
+      if (root.opened) root.close()
+      else root.openFromIpc()
+    }
     function lock(): string { root.lockVault(); return "locked" }
-    function settings(): string { root.open(); root.openSettings(); return "settings" }
+    function settings(): string {
+      if (root.sshApprovalInPanel()) return "busy"
+      root.openFromIpc()
+      root.openSettings()
+      return "settings"
+    }
     function setup(): string {
-      root.open()
+      if (root.sshApprovalInPanel()) return "busy"
+      root.openFromIpc()
       root.setupDismissed = false
       root.checkDependencies()
       root.currentScreen = "setup"

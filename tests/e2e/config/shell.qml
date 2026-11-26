@@ -127,7 +127,7 @@ ShellRoot {
       vault.envelopeSummary = null
       vault.pinEntry = "123456"
       vault.submitPinUnlock()
-      testRoot.legacyPinFixtureProc = vault.vaultRuns[vault.vaultRunSeq]
+      testRoot.legacyPinFixtureProc = vault.vaultRuns[vault.vaultRunSeq].proc
     }
     // Reproduce a second UI action before a killed VaultProcess can finish.
     // This target exists only in the disposable fixture, never in the plugin.

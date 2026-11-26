@@ -37,6 +37,16 @@ check("an invalid login server selection falls back to the safe US default",
     && Model.loginServerUrlFor("other", SERVER) === "https://vault.bitwarden.com",
   "unknown region values must not turn a stale custom URL into a destination")
 
+// Userinfo would reach `bw config server` argv and the registry as a
+// credential, not an address. It is refused, not silently stripped.
+check("a server URL with a username or password in the authority is refused",
+  Model.validateServerUrl
+    && Model.validateServerUrl("https://user:secret@vault.example.com") !== ""
+    && /username or password/i.test(Model.validateServerUrl("https://user:secret@vault.example.com"))
+    && Model.validateServerUrl("https://user:secret@vault.example.com").includes("vault.example.com")
+    && Model.validateServerUrl("https://vault.example.com") === "",
+  Model.validateServerUrl && Model.validateServerUrl("https://user:secret@vault.example.com"))
+
 check("only explicit Bitwarden second-factor challenges reveal the follow-up prompt",
   Model.loginNeedsSecondFactor
     && Model.loginNeedsSecondFactor("", "Two factor required.")
@@ -329,10 +339,45 @@ check("the email login stage that carries a method carries no code with it",
 // these check that this is safe, not just that it works.
 const deviceCmd = Model.deviceVerificationLoginCommand("john@example.com", "", 0)
 const deviceFlat = flat(deviceCmd)
-check("the device code is piped to bw's stdin, read from the environment",
-  Model.deviceCodeEnvVar() === "QSBW_DEVICE_CODE"
-    && deviceFlat.includes('printf \'%s\\n\' "$' + Model.deviceCodeEnvVar() + '" |'),
+const deviceEnv = Model.deviceCodeEnvVar()
+check("the device code is read from the environment",
+  deviceEnv === "QSBW_DEVICE_CODE", deviceEnv)
+// The wrapper and its supervisor subshell both fork before `command` runs, so
+// the outer script itself must not keep the exported variable: the pipe's
+// printf and the supervisor would otherwise carry it in /proc/<pid>/environ
+// for the pipe's or the login's lifetime. The code is copied into a plain
+// variable and the exported one is dropped in the outer prelude.
+check("the code is copied into a non-exported variable before any prelude step",
+  deviceFlat.includes('__qsbw_dev="$' + deviceEnv + '"; unset ' + deviceEnv + "; "),
   deviceFlat)
+const deviceUnsetAt = deviceFlat.indexOf("unset " + deviceEnv)
+const devicePreludeCommands = ["dirname --", "mkdir -p --", "chmod 700 --", "rm -f --", "mkfifo -m 600"]
+  .map((cmd) => deviceFlat.indexOf(cmd)).filter((at) => at !== -1)
+const deviceForkAt = deviceFlat.indexOf("set -m; (")
+check("the exported variable is unset before the first external prelude command",
+  deviceUnsetAt !== -1 && devicePreludeCommands.length > 0
+    && deviceUnsetAt < Math.min(...devicePreludeCommands),
+  deviceFlat.slice(0, 600))
+check("and before the supervised `( ... ) &` fork",
+  deviceUnsetAt !== -1 && deviceForkAt !== -1 && deviceUnsetAt < deviceForkAt,
+  deviceFlat.slice(0, 1200))
+check("printf reads the plain variable, so the pipe is not left empty",
+  deviceFlat.includes("printf '%s\\n' \"$__qsbw_dev\" |")
+    && !deviceFlat.includes("printf '%s\\n' \"$" + deviceEnv + "\""),
+  deviceFlat)
+// The long-lived bw does not need the variable (it reads the code from stdin),
+// so it is dropped before bw starts as well.
+check("bw starts without the device code variable in its environment",
+  deviceFlat.includes('| env -u ' + deviceEnv + " timeout ")
+    && deviceFlat.indexOf("env -u " + deviceEnv)
+      < deviceFlat.indexOf("bw login"),
+  deviceFlat)
+// The prelude runs before serverConfigPrefix()'s `&&` is evaluated, so a
+// server that failed to configure still stops the login before the pipeline.
+check("a failed server configuration still stops the login before it runs",
+  flat(Model.deviceVerificationLoginCommand("john@example.com", SERVER, 0))
+    .includes("bw config server '" + SERVER + "' >/dev/null 2>&1 && printf '%s\\n'"),
+  flat(Model.deviceVerificationLoginCommand("john@example.com", SERVER, 0)))
 check("the device code reaches no argv at all, not even bw's",
   !deviceFlat.includes("--code") && !/--\w+ \d{6}/.test(deviceFlat), deviceFlat)
 check("the master password still travels by FIFO on this path too",
@@ -378,6 +423,18 @@ check("the sanitiser drops escape sequences and inquirer's own prompt lines",
 check("a stack trace cannot flood the panel's error banner",
   Model.sanitizeInteractiveStderr("x".repeat(9000), "").length <= 300,
   String(Model.sanitizeInteractiveStderr("x".repeat(9000), "").length))
+
+// QK-6: the FIDO hmac is a bearer key. It stays in a shell variable and is
+// handed to the one nested command that consumes it, never exported for the
+// rest of the pipeline (and never in argv).
+const fidoCmd = Model.fidoUnlockCommand("/usr/bin/qs-bitwarden-unlock-key",
+  { id: "user-1", server: "https://vault.example.com" },
+  { device: "/dev/hidraw0", cred: "QUJD", rp: "pam://host", salt: "QUJD" })
+check("the FIDO hmac is not exported into the pipeline environment",
+  fidoCmd.length === 3 && !/export\s+QSBW_FIDO_HMAC/.test(fidoCmd[2])
+    && /QSBW_FIDO_HMAC="\$__hmac"\s+bash -c/.test(fidoCmd[2])
+    && /unset __hmac; unset QSBW_FIDO_HMAC/.test(fidoCmd[2]),
+  fidoCmd[2])
 
 // --- the env vars the commands rely on --------------------------------------
 
@@ -867,6 +924,14 @@ check("the diagnostic carries what bw said, escape sequences and all removed",
 check("the diagnostic is bounded, so a stack trace cannot fill the log",
   Model.loginDiagnostic("", "x".repeat(9000), 1, "bw-error").length < 300,
   String(Model.loginDiagnostic("", "x".repeat(9000), 1, "bw-error").length))
+// The active code is not always available at the diagnostic call site, so a
+// standalone 6-8 digit code is redacted by shape as well.
+check("the diagnostic redacts a standalone one-time code it was not told about",
+  !Model.loginDiagnostic("", "Your code is 913744.", 1, "bw-error").includes("913744")
+    && Model.loginDiagnostic("", "Your code is 913744.", 1, "bw-error").includes("[code]")
+    && !Model.loginDiagnostic("", "code 12345678 rejected", 1, "bw-error").includes("12345678")
+    && Model.loginDiagnostic("", "build 123456789", 1, "bw-error").includes("123456789"),
+  Model.loginDiagnostic("", "Your code is 913744.", 1, "bw-error"))
 
 // --- a submit must never be swallowed by the buffer scrub -------------------
 //

@@ -24,6 +24,11 @@ Column {
   readonly property int armDelayMs: 800
   property bool armed: false
   readonly property bool shown: active && visible
+  // A card promoted from unlock_required keeps the unlock request id until
+  // the helper's approval_required replaces it (Service.adoptSshPrompt()).
+  // Until then its id cannot be approved, so the affirmative tiles wait.
+  readonly property bool awaitingAdoption: vault.sshPromotedOldId !== null
+    && vault.sshPromotedOldId !== undefined
 
   // Starts the delay over and parks the keyboard on the guard.
   function rearm() {
@@ -52,6 +57,7 @@ Column {
     target: screen.vault
     function onSshPromptChanged() { screen.rearm() }
     function onStatusChanged() { screen.rearm() }
+    function onSshPromotedOldIdChanged() { screen.rearm() }
   }
 
   Timer {
@@ -271,11 +277,13 @@ Column {
       width: decisionRow.tileWidth
       glyph: "󰄬"
       label: "Approve once"
-      tooltipText: "Sign this one request"
-      // Unreachable by keyboard or pointer until armed.
-      enabled: screen.armed
-      focusable: screen.armed
-      opacity: screen.armed ? 1 : 0.45
+      tooltipText: screen.awaitingAdoption
+        ? "Waiting for the signing request to be confirmed" : "Sign this one request"
+      // Unreachable by keyboard or pointer until armed, and not while the
+      // card still holds the unlock request's id.
+      enabled: screen.armed && !screen.awaitingAdoption
+      focusable: screen.armed && !screen.awaitingAdoption
+      opacity: screen.armed && !screen.awaitingAdoption ? 1 : 0.45
       Keys.forwardTo: [keyGuard]
       onClicked: vault.approveSshRequest(0)
     }
@@ -286,11 +294,13 @@ Column {
       width: decisionRow.tileWidth
       glyph: "󰔟"
       label: vault.sshPrompt ? vault.sshPrompt.grantShortLabel : ""
-      tooltipText: (vault.sshPrompt ? vault.sshPrompt.grantLabel + ": sign" : "Sign")
-        + " further requests of this same kind from this same program with this key, without asking again, until the window expires"
-      enabled: screen.armed
-      focusable: screen.armed
-      opacity: screen.armed ? 1 : 0.45
+      tooltipText: screen.awaitingAdoption
+        ? "Waiting for the signing request to be confirmed"
+        : (vault.sshPrompt ? vault.sshPrompt.grantLabel + ": sign" : "Sign")
+          + " further requests of this same kind from this same program with this key, without asking again, until the window expires"
+      enabled: screen.armed && !screen.awaitingAdoption
+      focusable: screen.armed && !screen.awaitingAdoption
+      opacity: screen.armed && !screen.awaitingAdoption ? 1 : 0.45
       Keys.forwardTo: [keyGuard]
       onClicked: vault.approveSshRequest(vault.sshPrompt ? vault.sshPrompt.grantSeconds : 0)
     }

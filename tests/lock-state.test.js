@@ -16,6 +16,8 @@ const { check, done } = createSuite("lock-state")
 
 const panelSrc = readPluginSource("Panel.qml")
 const bodyOf = name => functionBody(panelSrc, name)
+// A comment may name the old call; assertions about what runs must see code.
+const codeOnly = text => text.replace(/\/\/[^\n]*/g, "")
 
 // --- 1. The schema is the same on both sides of shell.json ------------------
 // The settings screen clamps to SETTINGS_SCHEMA and the marketplace shows
@@ -320,11 +322,17 @@ check("a PIN wrap cannot outlive the lock or abandonment it raced",
   bodyOf("submitPinSetup"))
 // A fingerprint wrap written for a vault generation that ended (or an
 // abandoned setup) is removed again.
+const fpSetupCode = codeOnly(bodyOf("submitFingerprintSetup"))
+const deleteEnvelopeCode = codeOnly(bodyOf("deleteEnvelopeForAccount"))
 check("a fingerprint wrap cannot outlive the lock or abandonment it raced",
-  /beginEpochOperation\("fingerprintAdd"\)/.test(bodyOf("submitFingerprintSetup"))
-    && /epochOperationIsStale\("fingerprintAdd"\)[\s\S]{0,300}?removeQuickUnlockMethod\(\{ kind: "remove", method: "fingerprint" \}\)/
-      .test(bodyOf("submitFingerprintSetup")),
-  bodyOf("submitFingerprintSetup"))
+  /beginEpochOperation\("fingerprintAdd"\)/.test(fpSetupCode)
+    && /epochOperationIsStale\("fingerprintAdd"\)[\s\S]{0,400}?deleteEnvelopeForAccount\(/
+      .test(fpSetupCode)
+    // Not the comment above the call, which names the old remove.
+    && !/removeQuickUnlockMethod\(\{ kind: "remove", method: "fingerprint" \}\)/.test(fpSetupCode)
+    && /kind: "delete"/.test(deleteEnvelopeCode)
+    && /Model\.envelopeAccountEnv\(target\)/.test(deleteEnvelopeCode),
+  fpSetupCode + "\n" + deleteEnvelopeCode)
 // And logout: the queue is emptied, and the final clear waits for a write
 // already running rather than racing it.
 check("logout drops queued envelope work and waits for a running write",

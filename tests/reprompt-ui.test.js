@@ -108,5 +108,12 @@ check("the panel draws it and holds its own key dispatch meanwhile",
     && /blocked: repromptConfirm\.shown/.test(view)
     && /if \(repromptConfirm\.shown\) \{\s*if \(event\.key === Qt\.Key_Escape\) \{\s*repromptConfirm\.cancel\(\)/.test(view),
   "typing the master password would run panel shortcuts")
+// The name is vault text from a possibly shared item; the prompt must not let
+// bidi/zero-width characters redraw it as another item's (JS-9, UI-6).
+check("the item it names is escaped before the prompt shows it",
+  /Model\.visibleText\(confirm\.vault\.repromptItemName\)/.test(confirm)
+    && /import "BitwardenModel\.js" as Model/.test(confirm)
+    && !/text: \(confirm\.vault\.repromptItemName \? confirm\.vault\.repromptItemName/.test(confirm),
+  "the question renders the raw reprompt item name")
 
 done()

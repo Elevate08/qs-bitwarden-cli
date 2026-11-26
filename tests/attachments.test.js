@@ -68,6 +68,12 @@ check("an entry with no file name still gets a label",
   Model.parseAttachments([{ id: "x" }])[0].fileName === "attachment",
   Model.parseAttachments([{ id: "x" }])[0].fileName)
 
+// The row draws the escaped copy: `fileName` is the stored name (download path
+// and deduplication) and can carry bidi/zero-width characters (JS-9, UI-6).
+check("the attachment row draws the escaped file name, not the raw one",
+  /text: modelData\.displayFileName\b/.test(panelSrc) && !/text: modelData\.fileName\b/.test(panelSrc),
+  "the row renders the raw file name")
+
 // --- the size fallback, for entries that arrive without sizeName -------------
 
 const sized = Model.parseAttachments([{ id: "x", fileName: "f", size: "2048" }])
@@ -116,6 +122,15 @@ check("an ordinary name is left alone",
 check("spaces and unicode survive",
   Model.safeAttachmentFileName("résumé final.pdf") === "résumé final.pdf",
   Model.safeAttachmentFileName("résumé final.pdf"))
+// Bidi and zero-width characters must not survive into a name the user reads
+// or into the file saved in Downloads.
+const bidiName = "invoice\u202e .pdf\u2066"
+check("bidi controls and isolations are removed from a saved name",
+  Model.safeAttachmentFileName(bidiName) === "invoice .pdf",
+  JSON.stringify(Model.safeAttachmentFileName(bidiName)))
+check("zero-width, soft-hyphen, letter-mark and tag characters are removed too",
+  Model.safeAttachmentFileName("a\u00ad\u061c\u180e\u200b\u2060b\udb40\udc01.pdf") === "ab.pdf",
+  JSON.stringify(Model.safeAttachmentFileName("a\u00ad\u061c\u180e\u200b\u2060b\udb40\udc01.pdf")))
 
 const long = Model.safeAttachmentFileName("x".repeat(400) + ".pdf")
 check("an absurdly long name is truncated but keeps its extension",
@@ -634,6 +649,15 @@ check("each open gets its own link", openWith(openTarget).argv[0] !== link, "reu
 check("an extension that could carry the name is dropped",
   path.basename(openWith(path.join(downloads, "notes.project-falcon-budget")).argv[0]) === "attachment",
   "kept")
+// A vault name must not choose an executable/script/desktop extension for the
+// neutral link the opener is handed.
+for (const ext of [".desktop", ".sh", ".html", ".bat", ".exe", ".svg"]) {
+  const dangerous = path.join(downloads, "payload" + ext)
+  fs.writeFileSync(dangerous, "x")
+  check(`a ${ext} attachment is staged without that extension`,
+    path.basename(openWith(dangerous).argv[0]) === "attachment",
+    path.basename(openWith(dangerous).argv[0]))
+}
 let relative = null
 try { openWith("relative.pdf") } catch (e) { relative = e }
 check("only an absolute path is linked", relative !== null, "linked")

@@ -37,6 +37,13 @@ check("attestations are pinned to this repository and its release workflow",
   script.includes('REPO="Elevate08/qs-bitwarden-cli"')
     && script.includes('SIGNER="$REPO/.github/workflows/release.yml"')
     && /--repo "\$REPO" --signer-workflow "\$SIGNER"/.test(script), "")
+check("attestations are bound to this checkout's commit and exact tag",
+  /--source-digest "\$head"/.test(script) && /--source-ref "refs\/tags\/\$tag"/.test(script)
+    && /describe --exact-match --tags HEAD/.test(script), "")
+check("attestations reject self-hosted runners and re-check the reported digest",
+  /--deny-self-hosted-runners/.test(script) && /\$\{binding##\* @ \}/.test(script), "")
+check("the checksum file is read strictly, so a truncated SHA256SUMS fails",
+  /sha256sum --strict -c SHA256SUMS/.test(script), "")
 check("the rebuild delegates to build-agent.sh --compare-tracked",
   /scripts\/build-agent\.sh" --arch "\$a" --compare-tracked/.test(script), "")
 

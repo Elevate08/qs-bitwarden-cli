@@ -87,6 +87,26 @@ const listed = Model.parseItems(JSON.stringify([login, secureNote, card, identit
 check("every listed item carries its raw object", listed.every(i => i.rawObject), "missing rawObject")
 
 const listedLogin = listed.find(i => i.id === login.id)
+
+// Names are untrusted display text. The canonical name is kept for editing;
+// the display copy escapes bidi/zero-width so the UI cannot be spoofed.
+const hostile = Model.parseItems([{ id: "h", type: 1, name: "in\u202evoice",
+  attachments: [{ id: "a", fileName: "state\u202ement.pdf" }] }])[0]
+check("an item name has an escaped display copy without changing the saved name",
+  hostile.name === "in\u202evoice" && hostile.displayName === "in\\u202evoice",
+  JSON.stringify({ name: hostile.name, displayName: hostile.displayName }))
+check("an attachment name has the same escaped display copy",
+  hostile.attachments[0].fileName === "state\u202ement.pdf"
+    && hostile.attachments[0].displayFileName === "state\\u202ement.pdf",
+  JSON.stringify(hostile.attachments[0]))
+
+// The 16 MB list read can still hold more tiny rows than a real vault; a row
+// is parsed into dozens of fields, so the row count has its own ceiling.
+const tooManyRows = []
+for (let i = 0; i < 20050; i++) tooManyRows.push({ id: "r" + i, type: 2, name: "n" + i })
+check("parseItems stops at its row ceiling instead of building unbounded objects",
+  Model.MAX_ITEM_ROWS === 20000 && Model.parseItems(tooManyRows).length === 20000,
+  `${Model.MAX_ITEM_ROWS} / ${Model.parseItems(tooManyRows).length}`)
 const detail = Model.itemDetailFromObject(listedLogin.rawObject)
 check("the password survives the round trip through the list",
   detail.password === "s3cr3t-p4ss", detail.password)

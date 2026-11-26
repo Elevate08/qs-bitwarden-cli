@@ -328,10 +328,11 @@ check("the one pass still requires both builds to match before writing anything"
 check("a drifted binary still uploads the candidate that fixes it",
   workflow.indexOf("name: Upload the candidate") < workflow.indexOf("name: Fail if the tracked binary drifted"),
   "the job fails before the bytes a maintainer needs are available")
-check("drift is still fatal on a same-repository run",
+check("drift is fatal everywhere, including forks, except where helper-rebuild fixes it",
   /steps\.compare\.outputs\.drift == 'yes'/.test(workflow)
-    && /github\.event\.pull_request\.head\.repo\.fork != true/.test(workflow),
-  "recording drift replaced failing on it")
+    && /steps\.compare\.outputs\.autofix != 'yes'/.test(workflow)
+    && !/head\.repo\.fork != true/.test(workflow),
+  "recording drift replaced failing on it, or a fork was exempted")
 
 // No paths filter (it once let panel changes merge unchecked), and master is
 // deliberately not a trigger: it only receives up-to-date release branches
@@ -355,6 +356,19 @@ check("something does run on a master push, and it is the publish",
 check("the publish only publishes -- it does not build or test",
   !/cargo (build|test|clippy)|npm |node |qmltestrunner|build-agent\.sh/.test(publish),
   "the master workflow has grown work that belongs on the release branch")
+check("the publish re-checks the draft's assets before un-drafting",
+  /gh attestation verify "\$asset"/.test(publish) && /--source-digest "\$commit"/.test(publish)
+    && /unexpected asset/.test(publish) && /does not match bin\//.test(publish),
+  "a draft edited by hand would publish without matching the tag")
+// Dependabot targets master; a read-only job there catches a lockfile update
+// that left bin/ stale, without weakening the release gates.
+const masterVerify = read(".github/workflows/master-verify.yml")
+check("master gets a read-only source-to-bytes check after a dependabot merge",
+  /push:\s*\n\s*branches:\s*\[master\]/.test(masterVerify)
+    && /verify-helpers\.sh --compare-tracked/.test(masterVerify)
+    && /permissions:\s*\n\s*contents:\s*read/.test(masterVerify)
+    && !/contents:\s*write/.test(masterVerify),
+  "nothing on master checks the tracked helpers")
 check("the build workflow stays read-only; publishing holds write",
   /permissions:\s*\n\s*contents:\s*write/.test(publish)
     && /permissions:\s*\n\s*contents:\s*read/.test(workflow)
@@ -468,11 +482,14 @@ check("skipping every QML test fails the job",
   /every QML test was skipped, so this gate proved nothing/.test(workflow),
   "the gate could pass by running nothing at all")
 
-// A fork cannot push CI's bytes into its own branch, so an unconditional
-// match requirement would make every external agent-source PR unmergeable.
-check("a fork pull request reports binary drift rather than blocking on it",
-  /IS_FORK/.test(workflow) && /fork/.test(workflow),
-  "a fork contributor could never satisfy the binary comparison")
+// A fork cannot push CI's bytes into its own branch, but it must not get a
+// green check for bytes that do not match: the candidate upload stays, then
+// the comparison fails.
+check("a fork pull request fails on binary drift after uploading the candidate",
+  /IS_FORK/.test(workflow) && /a fork cannot receive CI's commit/.test(workflow)
+    && !/head\.repo\.fork != true/.test(workflow)
+    && workflow.indexOf("name: Upload the candidate") < workflow.indexOf("name: Fail if the tracked binary drifted"),
+  "a fork contributor gets a green check for unverified bytes")
 check("a same-repository run still fails on drift",
   /::error::the tracked binary does not match/.test(workflow),
   "drift is never fatal, so the comparison decides nothing")

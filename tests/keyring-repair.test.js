@@ -200,4 +200,42 @@ if (real.status === 0 && real.stdout) {
   }
 }
 
+// -------------------------------------------------------------------------
+// A write during the repair aborts it
+// -------------------------------------------------------------------------
+
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-repair-race-"))
+  try {
+    const bin = path.join(dir, "bin")
+    fs.mkdirSync(bin)
+    // The repair calls mktemp after it has scanned the keyring. Simulate a
+    // keyring daemon writing in that window: an unrelated secret changes,
+    // with the same line count, so only the stat/hash re-check can catch it.
+    fs.writeFileSync(path.join(bin, "mktemp"), `#!/bin/bash
+out="$(/usr/bin/mktemp "$@")" || exit 1
+sed -i 's/their-secret/their-secret-changed/' "$QSBW_TEST_TARGET"
+printf '%s\\n' "$out"
+`, { mode: 0o755 })
+    const sealed = crypto.randomBytes(300).toString("base64")
+    const file = path.join(dir, "Default_keyring.keyring")
+    const broken = keyring(wrap(sealed))
+    fs.writeFileSync(file, broken, { mode: 0o600 })
+    const r = spawnSync("bash", [script, file], {
+      encoding: "utf8",
+      env: Object.assign({}, process.env, { PATH: `${bin}:/usr/bin:/bin`, QSBW_TEST_TARGET: file })
+    })
+    const out = r.stdout + r.stderr
+    eq("a keyring changed during the repair fails", r.status, 1)
+    check("and says the keyring changed", /changed while it was being repaired/.test(out), out)
+    check("the concurrent write is preserved, not overwritten",
+      fs.readFileSync(file, "utf8").includes("their-secret-changed")
+        && fs.readFileSync(file, "utf8").includes(wrap(sealed)), fs.readFileSync(file, "utf8"))
+    eq("and no backup is left for a repair that did not happen",
+      fs.readdirSync(dir).filter(f => f.includes(".before-repair-")).length, 0)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 done()

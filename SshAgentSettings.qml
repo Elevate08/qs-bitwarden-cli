@@ -17,6 +17,18 @@ Column {
   width: parent.width
   spacing: Style.space(6)
 
+  // The grant row stays one bounded line; the path keeps its distinguishing
+  // tail and the fingerprint its ends (UI-3).
+  function shortPath(value) {
+    var text = String(value || "")
+    return text.length > 52 ? "\u2026" + text.slice(text.length - 51) : text
+  }
+
+  function shortFingerprint(value) {
+    var text = String(value || "")
+    return text.length > 21 ? text.slice(0, 10) + "\u2026" + text.slice(text.length - 10) : text
+  }
+
   Item { width: parent.width; height: Style.space(10) }
 
   SshSectionHeader {
@@ -200,8 +212,13 @@ Column {
       SshCaption {
         panel: section.panel
         width: parent.width - Style.space(110)
+        wrapMode: Text.NoWrap
+        elide: Text.ElideRight
+        maximumLineCount: 1
         text: modelData.keyName + "  ·  "
           + modelData.processName
+          + (modelData.processPath ? "  ·  " + section.shortPath(modelData.processPath) : "")
+          + (modelData.fingerprint ? "  ·  " + section.shortFingerprint(modelData.fingerprint) : "")
           + (modelData.operationLabel ? "  ·  " + modelData.operationLabel : "")
           + (modelData.hostKey ? "  ·  " + modelData.hostKey : "")
           + "  ·  " + modelData.remainingLabel
