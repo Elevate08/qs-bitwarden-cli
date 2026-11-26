@@ -138,26 +138,31 @@ impl Runtime {
         if std::fs::symlink_metadata(&fifo_path).is_ok() {
             return Err(RuntimeError::UnsafeFifo);
         }
-        fs::mkfifoat(CWD, &fifo_path, Mode::RUSR | Mode::WUSR).map_err(|_| RuntimeError::Io)?;
-        let fd = fs::open(
-            &fifo_path,
-            OFlags::RDWR | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|_| RuntimeError::UnsafeFifo)?;
-        let fifo = File::from(fd);
-        let metadata = fifo.metadata().map_err(|_| RuntimeError::Io)?;
-        if !metadata.file_type().is_fifo()
-            || metadata.uid() != rustix::process::geteuid().as_raw()
-            || metadata.mode() & 0o777 != 0o600
-        {
-            return Err(RuntimeError::UnsafeFifo);
-        }
+        let fifo = create_fifo(&fifo_path)?;
         Ok(Self {
             directory,
             fifo_path,
             fifo,
         })
+    }
+
+    /// Close the FIFO and recreate it at the same path. Called when a load is
+    /// cancelled, most importantly on lock: a writer that already held the old
+    /// FIFO open sees `EPIPE`, so a payload arriving after the lock cannot sit
+    /// buffered waiting for the next load. The replacement keeps the same
+    /// 0600-in-0700 permissions.
+    pub fn reset_fifo(&mut self) -> Result<(), RuntimeError> {
+        match std::fs::remove_file(&self.fifo_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(RuntimeError::Io),
+        }
+        // Creating and opening the replacement before dropping the old `File`
+        // keeps the path usable for the next load; assigning it closes the old
+        // read end, which is what turns a late write into `EPIPE`.
+        let replacement = create_fifo(&self.fifo_path)?;
+        self.fifo = replacement;
+        Ok(())
     }
 
     pub fn directory(&self) -> &Path {
@@ -311,6 +316,9 @@ impl ServiceRuntime {
     pub fn runtime(&self) -> &Runtime {
         &self.runtime
     }
+    pub fn runtime_mut(&mut self) -> &mut Runtime {
+        &mut self.runtime
+    }
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }
@@ -344,7 +352,45 @@ impl Drop for ServiceRuntime {
     }
 }
 
+/// Create and open the FIFO 0600 read/write, refusing a path that is not the
+/// same-owner FIFO just created. Read/write keeps writers from seeing EOF or
+/// SIGPIPE between loads.
+fn create_fifo(fifo_path: &Path) -> Result<File, RuntimeError> {
+    fs::mkfifoat(CWD, fifo_path, Mode::RUSR | Mode::WUSR).map_err(|_| RuntimeError::Io)?;
+    let fd = fs::open(
+        fifo_path,
+        OFlags::RDWR | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| RuntimeError::UnsafeFifo)?;
+    let fifo = File::from(fd);
+    let metadata = fifo.metadata().map_err(|_| RuntimeError::Io)?;
+    if !metadata.file_type().is_fifo()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.mode() & 0o777 != 0o600
+    {
+        return Err(RuntimeError::UnsafeFifo);
+    }
+    Ok(fifo)
+}
+
 fn ensure_runtime_directory(runtime_root: &Path) -> Result<PathBuf, RuntimeError> {
+    // The root itself must be the private systemd-style runtime directory: an
+    // absolute, same-owner, non-symlink 0700 directory. A relative or shared
+    // root would let another user rename the leaf and substitute a socket.
+    if !runtime_root.is_absolute() {
+        return Err(RuntimeError::UnsafeDirectory);
+    }
+    let root =
+        std::fs::symlink_metadata(runtime_root).map_err(|_| RuntimeError::UnsafeDirectory)?;
+    if !root.file_type().is_dir()
+        || root.file_type().is_symlink()
+        || root.uid() != rustix::process::geteuid().as_raw()
+        || root.mode() & 0o777 != 0o700
+    {
+        return Err(RuntimeError::UnsafeDirectory);
+    }
+
     let directory = runtime_root.join(RUNTIME_NAME);
     match std::fs::create_dir(&directory) {
         Ok(()) => std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))

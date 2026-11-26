@@ -20,6 +20,9 @@
 # the only place the triple actually needs fixing.
 
 [net]
-# A release build resolves nothing: the lockfile is the dependency set, and a
-# build that reaches the network is a build whose inputs were not pinned.
+# A clean build fetches its crates once; `--locked` keeps the set to the
+# lockfile, and every crate's checksum is verified against it, so the network
+# is a transport here, not an input. Offline stays false so that a fresh
+# container can build; the release gates run with --locked and compare the
+# resulting bytes against the committed helpers.
 offline = false

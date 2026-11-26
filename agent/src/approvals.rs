@@ -61,9 +61,18 @@ pub struct SignScope {
 impl SignScope {
     /// Whether approving may open a grant, and a live grant may answer. Never
     /// for forwarded requests (the grant would cover local `ssh`, letting the
-    /// remote host sign) or unrecognised data (a grant must say what it covers).
+    /// remote host sign), unrecognised data (a grant must say what it covers),
+    /// or a login with no verified server host key (the grant would cover
+    /// every later unreported login for the same user and program).
     pub fn grantable(&self) -> bool {
-        !self.forwarded && self.kind != SignKind::Other
+        if self.forwarded {
+            return false;
+        }
+        match &self.kind {
+            SignKind::UserAuth { host, .. } => !host.is_empty(),
+            SignKind::SshSig { .. } => true,
+            SignKind::Other => false,
+        }
     }
 }
 

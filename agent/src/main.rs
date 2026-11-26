@@ -316,7 +316,7 @@ async fn run() -> Result<(), ()> {
     let runtime_root = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .ok_or(())?;
-    let runtime = ServiceRuntime::acquire(&runtime_root).map_err(|_| ())?;
+    let mut runtime = ServiceRuntime::acquire(&runtime_root).map_err(|_| ())?;
     let listener = runtime.bind_socket().map_err(|_| ())?;
     let (output_tx, output_rx) = mpsc::channel(CONTROL_OUTPUT_CAPACITY);
     let output_task = tokio::spawn(write_output(output_rx));
@@ -356,7 +356,7 @@ async fn run() -> Result<(), ()> {
                     ControlMessage::Hello { .. } => return Err(()),
                     ControlMessage::VaultLocked { epoch, .. } => {
                         gate_open = false;
-                        cancel_load(&mut active_load, runtime.runtime());
+                        cancel_load(&mut active_load, runtime.runtime_mut())?;
                         store.lock(epoch);
                         approvals.invalidate_all();
                         fail_pending(&mut pending);
@@ -366,7 +366,7 @@ async fn run() -> Result<(), ()> {
                     }
                     ControlMessage::VaultLoggedOut { .. } => {
                         gate_open = false;
-                        cancel_load(&mut active_load, runtime.runtime());
+                        cancel_load(&mut active_load, runtime.runtime_mut())?;
                         store.logout(store.epoch().saturating_add(1));
                         approvals.invalidate_all();
                         fail_pending(&mut pending);
@@ -427,7 +427,7 @@ async fn run() -> Result<(), ()> {
                         let Some(load) = active_load.as_mut() else { return Err(()) };
                         if load.epoch != epoch { return Err(()); }
                         if status != LoadStatus::Ok {
-                            cancel_load(&mut active_load, runtime.runtime());
+                            cancel_load(&mut active_load, runtime.runtime_mut())?;
                             store.lock(epoch);
                             gate_open = false;
                             cancel_held(&mut held, "load-failed", &output_tx)?;
@@ -436,7 +436,7 @@ async fn run() -> Result<(), ()> {
                             load.end_received = true;
                             load.payload_deadline_ms = Some(elapsed_ms(started).saturating_add(LOAD_END_GRACE_MS));
                             settle_load(
-                                finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime(), &output_tx)?,
+                                finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime_mut(), &output_tx)?,
                                 &mut held,
                                 &mut held_identities,
                                 &store,
@@ -455,7 +455,7 @@ async fn run() -> Result<(), ()> {
                 if load.epoch != epoch { continue; }
                 load.payload = Some(result);
                 settle_load(
-                    finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime(), &output_tx)?,
+                    finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime_mut(), &output_tx)?,
                     &mut held,
                     &mut held_identities,
                     &store,
@@ -474,7 +474,7 @@ async fn run() -> Result<(), ()> {
                     if load.payload.is_none() && load.payload_deadline_ms.is_some_and(|deadline| now >= deadline) {
                         load.payload = Some(Err(RuntimeError::ReadTimeout));
                         settle_load(
-                            finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime(), &output_tx)?,
+                            finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime_mut(), &output_tx)?,
                             &mut held,
                             &mut held_identities,
                             &store,
@@ -509,7 +509,7 @@ async fn run() -> Result<(), ()> {
     }
 
     approvals.invalidate_all();
-    cancel_load(&mut active_load, runtime.runtime());
+    let _ = cancel_load(&mut active_load, runtime.runtime_mut());
     fail_pending(&mut pending);
     let _ = cancel_held(&mut held, "shutdown", &output_tx);
     let _ = release_held_identities(&mut held_identities, &store, &output_tx, "shutdown");
@@ -851,13 +851,24 @@ fn settle_granted(
 /// remote host's requests, so any process there could read vault item names
 /// with `ssh-add -l`; it gets empty comments instead.
 fn identities_for(store: &KeyStore, forwarded: bool) -> Vec<u8> {
-    let identities: Vec<_> = store
+    let comments: Vec<_> = store
         .public_identities()
         .iter()
         .map(|key| {
-            let comment = if forwarded { "" } else { key.name.as_str() };
+            // Item names are vault metadata; `ssh-add -l` prints them to a
+            // terminal, so escape anything that draws as nothing or changes
+            // how its neighbours are drawn.
+            let comment = if forwarded {
+                String::new()
+            } else {
+                protocol::visible_text(&key.name)
+            };
             (key.public_blob(), comment)
         })
+        .collect();
+    let identities: Vec<_> = comments
+        .iter()
+        .map(|(blob, comment)| (*blob, comment.as_str()))
         .collect();
     protocol::identities_response(&identities)
 }
@@ -954,14 +965,15 @@ fn fail_pending(pending: &mut HashMap<RequestId, PendingSign>) {
     }
 }
 
-/// Stop any load and wipe what the FIFO holds. With no reader left, a
-/// payload in the pipe belongs to no load, and it carries private keys; one
-/// that arrives later is dropped by the next load's filter.
-fn cancel_load(active: &mut Option<ActiveLoad>, runtime: &Runtime) {
+/// Stop any load and replace the FIFO. With no reader left, a payload in the
+/// old pipe belongs to no load, and it carries private keys; replacing the
+/// FIFO closes the old read end so a late writer gets `EPIPE` instead of
+/// leaving the rest buffered for the next load.
+fn cancel_load(active: &mut Option<ActiveLoad>, runtime: &mut Runtime) -> Result<(), ()> {
     if let Some(load) = active.take() {
         load.task.abort();
     }
-    runtime.discard_buffered();
+    runtime.reset_fifo().map_err(|_| ())
 }
 
 enum LoadOutcome {
@@ -998,7 +1010,7 @@ fn finish_load_if_ready(
     active: &mut Option<ActiveLoad>,
     store: &mut KeyStore,
     gate_open: &mut bool,
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     output: &mpsc::Sender<Output>,
 ) -> Result<LoadOutcome, ()> {
     let ready = active
@@ -1048,9 +1060,10 @@ fn finish_load_if_ready(
             store.lock(load.epoch);
             *gate_open = false;
             // Its payload may have landed after the reader gave up (a vault
-            // read past the 30 s deadline). The next load's filter would skip
-            // it anyway; wiping it now keeps keys from sitting in the pipe.
-            runtime.discard_buffered();
+            // read past the 30 s deadline). Replacing the FIFO makes a late
+            // writer fail rather than leaving keys in the pipe; the next load
+            // reopens the fresh one.
+            runtime.reset_fifo().map_err(|_| ())?;
             eprintln!("qs-bitwarden-ssh-agent: key load failed");
             emit(
                 output,

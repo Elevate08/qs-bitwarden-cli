@@ -138,6 +138,10 @@ pub struct Store {
     /// a vault the panel has since locked, logged out of or switched away
     /// from.
     generation: u64,
+    /// Counts `forget_secret`s per name. A run that captures a named secret
+    /// remembers the epoch at spawn, so a cancelled prompt that finishes
+    /// later cannot put its answer back.
+    secret_epochs: HashMap<String, u64>,
 }
 
 impl Store {
@@ -157,12 +161,27 @@ impl Store {
         self.secrets.get(name).map(|value| value.as_str())
     }
 
-    pub fn set_secret(&mut self, name: String, value: Zeroizing<String>) {
+    /// Stores `value` unless `name` was forgotten since `epoch` was captured
+    /// (a run that started before `ForgetSecret`).
+    pub fn set_secret(&mut self, name: String, value: Zeroizing<String>, epoch: u64) -> bool {
+        if self.secret_epoch(&name) != epoch {
+            return false;
+        }
         self.secrets.insert(name, value);
+        true
     }
 
+    /// Drops one named secret and fences any run that captured it earlier:
+    /// the epoch moves on, so a late answer is refused by `set_secret`.
     pub fn forget_secret(&mut self, name: &str) {
         self.secrets.remove(name);
+        let epoch = self.secret_epochs.entry(name.to_owned()).or_insert(0);
+        *epoch = epoch.wrapping_add(1);
+    }
+
+    /// The cancellation epoch of `name`; a run captures it at spawn.
+    pub fn secret_epoch(&self, name: &str) -> u64 {
+        self.secret_epochs.get(name).copied().unwrap_or(0)
     }
 
     /// Drops everything but the secrets named in `keep`: a lock, a logout
@@ -264,23 +283,42 @@ impl Store {
     pub fn strip_vault(&mut self, raw: &str, replace: bool) -> Option<Zeroizing<String>> {
         let mut vault: Value = serde_json::from_str(raw).ok()?;
         let object = vault.as_object_mut()?;
+        // Fail closed. The panel's filter emits exactly this shape, so an
+        // unknown top-level key could be a secret this helper does not know
+        // to strip; forward nothing rather than guess.
+        if object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "sshCapability" | "items" | "sshKeys"))
+        {
+            return None;
+        }
+        if let Some(keys) = object.get("sshKeys") {
+            let keys = keys.as_array()?;
+            if keys.iter().any(|key| !key.is_object()) {
+                return None;
+            }
+        }
+        let items = object.get_mut("items")?.as_array_mut()?;
+        if items.iter().any(|item| !item.is_object()) {
+            return None;
+        }
         if replace {
             self.items.clear();
             self.index.clear();
         }
-        if let Some(Value::Array(items)) = object.get_mut("items") {
-            for item in items.iter_mut() {
-                if let Value::Object(map) = item {
-                    self.hold(map);
-                    strip_item(map);
-                }
+        for item in items.iter_mut() {
+            if let Value::Object(map) = item {
+                self.hold(map);
+                strip_item(map);
             }
         }
-        if let Some(Value::Array(keys)) = object.get("sshKeys") {
-            for key in keys {
+        if let Some(Value::Array(keys)) = object.get_mut("sshKeys") {
+            for key in keys.iter_mut() {
                 if let Value::Object(map) = key {
-                    // Public records only: held for search, nothing to strip.
-                    self.hold(&mut map.clone());
+                    // Only the documented public fields: a private key a
+                    // filter regression let through is dropped, not forwarded.
+                    strip_ssh_key(map);
+                    self.hold(map);
                 }
             }
         }
@@ -382,6 +420,34 @@ fn haystack(item: &Map<String, Value>) -> Zeroizing<String> {
     Zeroizing::new(parts.join("\0").to_lowercase())
 }
 
+/// The public fields of an SSH record (BitwardenModel.js SANITIZED_ITEMS_FILTER).
+const SSH_PUBLIC_FIELDS: &[&str] = &[
+    "id",
+    "name",
+    "type",
+    "organizationId",
+    "folderId",
+    "favorite",
+    "reprompt",
+    "publicKey",
+    "fingerprint",
+];
+
+/// Drops everything but the documented public fields of an SSH record; a
+/// private key or an unknown field is wiped rather than forwarded.
+fn strip_ssh_key(key: &mut Map<String, Value>) {
+    let extra: Vec<String> = key
+        .keys()
+        .filter(|name| !SSH_PUBLIC_FIELDS.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    for name in extra {
+        if let Some(mut value) = key.remove(&name) {
+            wipe_value(&mut value);
+        }
+    }
+}
+
 /// Removes the secrets and records which ones there were, for the panel's
 /// "has a password" style flags. A card number keeps only its last four.
 fn strip_item(item: &mut Map<String, Value>) {
@@ -424,8 +490,9 @@ fn strip_item(item: &mut Map<String, Value>) {
     }
     if let Some(Value::Array(fields)) = item.get_mut("fields") {
         for field in fields.iter_mut() {
-            // Hidden custom fields (type 1) lose their value.
-            if field.get("type").and_then(Value::as_u64) != Some(1) {
+            // Hidden custom fields (type 1) and linked fields (type 3) lose
+            // their value: a linked field resolves to a secret on demand.
+            if !matches!(field.get("type").and_then(Value::as_u64), Some(1 | 3)) {
                 continue;
             }
             if let Value::Object(map) = field {
@@ -700,12 +767,117 @@ mod tests {
         assert!(extract_session("short").is_none());
         let mut store = Store::default();
         store.set_session(Zeroizing::new(TOKEN.into()));
-        store.set_secret("pw".into(), Zeroizing::new("x".into()));
+        let epoch = store.secret_epoch("pw");
+        assert!(store.set_secret("pw".into(), Zeroizing::new("x".into()), epoch));
         store.hold_session("lock1".into());
         store.forget(&["lock1".into()]);
         assert!(store.session().is_none() && store.secret("pw").is_none());
         assert_eq!(store.secret("lock1"), Some(TOKEN));
         store.forget(&[]);
         assert!(store.secret("lock1").is_none());
+    }
+
+    #[test]
+    fn a_vault_read_without_items_or_with_an_unknown_top_level_key_is_refused() {
+        let mut store = Store::default();
+        assert!(store.strip_vault(r#"{}"#, true).is_none());
+        assert!(store.strip_vault(r#"{"sshKeys":[]}"#, true).is_none());
+        assert!(
+            store
+                .strip_vault(r#"{"items":[],"masterPassword":"hunter2"}"#, true)
+                .is_none(),
+            "an unknown top-level key could carry a secret"
+        );
+        // Arrays that are not arrays of objects are a shape this helper does
+        // not understand: forward nothing.
+        assert!(store.strip_vault(r#"{"items":{}}"#, true).is_none());
+        assert!(store.strip_vault(r#"{"items":[1]}"#, true).is_none());
+        assert!(store
+            .strip_vault(r#"{"items":[],"sshKeys":{}}"#, true)
+            .is_none());
+        assert!(store
+            .strip_vault(r#"{"items":[],"sshKeys":[1]}"#, true)
+            .is_none());
+        // The documented shape still passes, with or without sshKeys.
+        assert!(store.strip_vault(r#"{"items":[]}"#, true).is_some());
+        assert!(store
+            .strip_vault(
+                r#"{"sshCapability":"confirmed","items":[],"sshKeys":[]}"#,
+                true
+            )
+            .is_some());
+    }
+
+    #[test]
+    fn ssh_records_keep_only_their_public_fields() {
+        let mut store = Store::default();
+        let raw = serde_json::json!({
+            "items": [],
+            "sshKeys": [{
+                "id": "s", "name": "Laptop", "type": 5,
+                "organizationId": "org", "folderId": null, "favorite": false,
+                "reprompt": 0, "publicKey": "ssh-ed25519 AAAA",
+                "fingerprint": "SHA256:x",
+                "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----secret",
+                "note": "also-secret"
+            }]
+        })
+        .to_string();
+        let out = store.strip_vault(&raw, true).unwrap();
+        assert!(!out.contains("PRIVATE KEY"));
+        assert!(!out.contains("also-secret"));
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        let key = &parsed["sshKeys"][0];
+        assert_eq!(key["publicKey"], "ssh-ed25519 AAAA");
+        assert_eq!(key["fingerprint"], "SHA256:x");
+        assert!(key.get("privateKey").is_none());
+        assert!(key.get("note").is_none());
+        assert_eq!(store.search("sha256:x"), ["s"]);
+    }
+
+    #[test]
+    fn a_linked_custom_field_loses_its_value_too() {
+        let mut store = Store::default();
+        let raw = serde_json::json!({
+            "items": [{
+                "id": "a", "type": 1, "name": "Bank",
+                "login": { "password": "hunter2" },
+                "fields": [
+                    { "name": "pw", "type": 3, "linkedId": 101, "value": "must-not-pass" },
+                    { "name": "note", "type": 0, "value": "plain" }
+                ]
+            }],
+            "sshKeys": []
+        })
+        .to_string();
+        let out = store.strip_vault(&raw, true).unwrap();
+        assert!(!out.contains("must-not-pass"));
+        assert!(out.contains("plain"));
+        assert_eq!(
+            store
+                .item_secret("a", &SecretField::Custom(0))
+                .as_deref()
+                .map(String::as_str),
+            Some("hunter2"),
+            "the linked field still resolves from the held item"
+        );
+    }
+
+    #[test]
+    fn a_forgotten_secret_fences_a_late_write() {
+        let mut store = Store::default();
+        let epoch = store.secret_epoch("pw");
+        assert!(store.set_secret("pw".into(), Zeroizing::new("first".into()), epoch));
+        store.forget_secret("pw");
+        assert!(
+            !store.set_secret("pw".into(), Zeroizing::new("late".into()), epoch),
+            "a run from before the forget cannot put the secret back"
+        );
+        assert!(store.secret("pw").is_none());
+        // A run that starts after the forget captures the new epoch and is
+        // allowed to write.
+        let epoch = store.secret_epoch("pw");
+        assert!(store.set_secret("pw".into(), Zeroizing::new("next".into()), epoch));
+        assert_eq!(store.secret("pw"), Some("next"));
     }
 }

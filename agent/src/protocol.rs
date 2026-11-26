@@ -5,8 +5,9 @@
 //! no diagnostics.
 
 use sha2::{Digest, Sha256};
+use signature::Verifier;
 use ssh_encoding::{Decode, Encode};
-use ssh_key::{Fingerprint, Signature};
+use ssh_key::{Certificate, Fingerprint, PublicKey, Signature};
 
 /// Largest accepted agent message body, excluding its four-byte prefix.
 pub const MAX_FRAME_LEN: usize = 256 * 1024;
@@ -48,20 +49,20 @@ pub enum AgentRequest {
     /// `session-bind@openssh.com` (OpenSSH 8.9+), sent on every connection;
     /// `is_forwarding` is true on one relaying a remote host's requests. The
     /// host key and session id name the server a later login on that session
-    /// goes to. The server's signature over them is not checked, so the host
-    /// is what the client reports, shown as such.
+    /// goes to. The signature is checked before that host is used for grant
+    /// matching; an unverified bind records no host.
     SessionBind {
         forwarding: bool,
         binding: SessionBinding,
     },
 }
 
-/// One bound session: its key-exchange hash and the server's host key, as
-/// its SHA-256 fingerprint.
+/// One bound session: its key-exchange hash and, when the bind's signature
+/// checked out, the server's host key as its SHA-256 fingerprint.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionBinding {
     pub session_id: Vec<u8>,
-    pub host_key: String,
+    pub host_key: Option<String>,
 }
 
 /// What a sign request asks for, read from the signed data. Grants are scoped
@@ -125,15 +126,29 @@ pub fn host_key_fingerprint(blob: &[u8]) -> String {
     Fingerprint::Sha256(Sha256::digest(blob).into()).to_string()
 }
 
+/// Read one SSH string, checking its declared length against the bytes actually
+/// left before slicing. `ssh_encoding`'s `Vec::<u8>::decode` allocates the
+/// declared length first, so a hostile inner length could ask for up to 4 GiB
+/// from a five-byte frame.
+fn read_string<'a>(fields: &mut &'a [u8]) -> Option<&'a [u8]> {
+    let length = usize::try_from(u32::decode(fields).ok()?).ok()?;
+    if length > fields.len() {
+        return None;
+    }
+    let (value, rest) = fields.split_at(length);
+    *fields = rest;
+    Some(value)
+}
+
 /// PROTOCOL.sshsig: the preamble, then namespace, reserved, hash algorithm
 /// and the message hash, each an SSH string.
 fn sshsig_namespace(message: &[u8]) -> Option<String> {
     let mut fields = message.strip_prefix(SSHSIG_PREAMBLE)?;
-    let namespace = Vec::<u8>::decode(&mut fields).ok()?;
-    let _reserved = Vec::<u8>::decode(&mut fields).ok()?;
-    let hash = Vec::<u8>::decode(&mut fields).ok()?;
-    let _digest = Vec::<u8>::decode(&mut fields).ok()?;
-    if !fields.is_empty() || !matches!(hash.as_slice(), b"sha256" | b"sha512") {
+    let namespace = read_string(&mut fields)?;
+    let _reserved = read_string(&mut fields)?;
+    let hash = read_string(&mut fields)?;
+    let _digest = read_string(&mut fields)?;
+    if !fields.is_empty() || (hash != b"sha256" && hash != b"sha512") {
         return None;
     }
     display_detail(namespace)
@@ -145,14 +160,14 @@ fn sshsig_namespace(message: &[u8]) -> Option<String> {
 /// present they must agree, as OpenSSH's agent requires, or it is `Other`.
 fn userauth(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> Option<SignKind> {
     let mut fields = message;
-    let session_id = Vec::<u8>::decode(&mut fields).ok()?;
+    let session_id = read_string(&mut fields)?;
     if u8::decode(&mut fields).ok()? != USERAUTH_REQUEST {
         return None;
     }
-    let user = Vec::<u8>::decode(&mut fields).ok()?;
-    let _service = Vec::<u8>::decode(&mut fields).ok()?;
-    let method = Vec::<u8>::decode(&mut fields).ok()?;
-    let hostbound = match method.as_slice() {
+    let user = read_string(&mut fields)?;
+    let _service = read_string(&mut fields)?;
+    let method = read_string(&mut fields)?;
+    let hostbound = match method {
         b"publickey" => false,
         b"publickey-hostbound-v00@openssh.com" => true,
         _ => return None,
@@ -160,14 +175,14 @@ fn userauth(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> Opt
     if u8::decode(&mut fields).ok()? != 1 {
         return None;
     }
-    let _algorithm = Vec::<u8>::decode(&mut fields).ok()?;
-    let key = Vec::<u8>::decode(&mut fields).ok()?;
+    let _algorithm = read_string(&mut fields)?;
+    let key = read_string(&mut fields)?;
     let signed_host = if hostbound {
-        let host_key = Vec::<u8>::decode(&mut fields).ok()?;
+        let host_key = read_string(&mut fields)?;
         if host_key.is_empty() || host_key.len() > MAX_HOST_KEY {
             return None;
         }
-        Some(host_key_fingerprint(&host_key))
+        Some(host_key_fingerprint(host_key))
     } else {
         None
     };
@@ -177,8 +192,8 @@ fn userauth(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> Opt
     let bound_host = binds
         .iter()
         .rev()
-        .find(|bind| bind.session_id == session_id)
-        .map(|bind| bind.host_key.clone());
+        .find(|bind| bind.session_id.as_slice() == session_id)
+        .and_then(|bind| bind.host_key.clone());
     let host = match (bound_host, signed_host) {
         (Some(bound), Some(signed)) if bound != signed => return None,
         (bound, signed) => bound.or(signed).unwrap_or_default(),
@@ -191,16 +206,22 @@ fn userauth(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> Opt
 
 /// Whether a character draws as nothing or changes how its neighbours are
 /// drawn: controls, line and paragraph separators, zero-width and
-/// direction marks, bidi embeddings and isolates, and the byte order mark.
+/// direction marks, bidi embeddings and isolates, the soft hyphen,
+/// variation selectors, tag characters and the byte order mark.
 /// Text containing one can pass for something else on a prompt.
-fn is_invisible(c: char) -> bool {
+pub(crate) fn is_invisible(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
-            '\u{200b}'..='\u{200f}'
+            '\u{00ad}'
+                | '\u{061c}'
+                | '\u{180e}'
+                | '\u{200b}'..='\u{200f}'
                 | '\u{2028}'..='\u{202e}'
-                | '\u{2066}'..='\u{2069}'
+                | '\u{2060}'..='\u{2069}'
+                | '\u{fe00}'..='\u{fe0f}'
                 | '\u{feff}'
+                | '\u{e0000}'..='\u{e007f}'
         )
 }
 
@@ -220,12 +241,12 @@ pub fn visible_text(text: &str) -> String {
 
 /// A namespace or login fit to display and compare exactly: non-empty,
 /// bounded UTF-8 without invisible characters.
-fn display_detail(bytes: Vec<u8>) -> Option<String> {
+fn display_detail(bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() || bytes.len() > MAX_SIGN_DETAIL {
         return None;
     }
-    let text = String::from_utf8(bytes).ok()?;
-    (!text.chars().any(is_invisible)).then_some(text)
+    let text = std::str::from_utf8(bytes).ok()?;
+    (!text.chars().any(is_invisible)).then(|| text.to_owned())
 }
 
 pub fn decode_request(frame: &[u8]) -> Option<AgentRequest> {
@@ -255,19 +276,72 @@ pub fn may_be_session_bind(frame: &[u8]) -> bool {
     let Some((&EXTENSION, mut fields)) = frame.get(4..).and_then(<[u8]>::split_first) else {
         return false;
     };
-    match Vec::<u8>::decode(&mut fields) {
-        Ok(name) => name == SESSION_BIND,
-        Err(_) => true,
+    match read_string(&mut fields) {
+        Some(name) => name == SESSION_BIND,
+        None => true,
     }
 }
 
+/// The bind's host fingerprint only when `signature` verifies under `host_key`
+/// over `session_id`. A server identified by a host certificate sends the
+/// certificate blob, so a failed plain-key parse is retried as one and checked
+/// against the certified key. An unverified or unparseable bind is still
+/// recorded for its forwarding flag, but it never names a host a grant can
+/// match.
+fn verified_bind_host(host_key: &[u8], session_id: &[u8], signature: &[u8]) -> Option<String> {
+    let signature = Signature::try_from(signature).ok()?;
+    let key = PublicKey::from_bytes(host_key)
+        .ok()
+        .or_else(|| {
+            Certificate::from_bytes(host_key)
+                .ok()
+                .map(|certificate| PublicKey::from(certificate.public_key().clone()))
+        })
+        .or_else(|| certified_key(host_key))?;
+    Verifier::verify(&key, session_id, &signature).ok()?;
+    // The fingerprint stays over the blob OpenSSH sent, certificate included,
+    // so grant matching sees the same server name `ssh-keygen -l` prints.
+    Some(host_key_fingerprint(host_key))
+}
+
+/// The certified key from a host certificate blob, for certificates `Certificate`
+/// will not parse. `ssh-keygen -s` without `-V` writes OpenSSH's indefinite
+/// validity (`u64::MAX`), which `ssh-key` 0.6.7 rejects as `Error::Time`. Only
+/// the algorithm, nonce and key fields are needed: the CA signature and
+/// validity are the connecting client's to check, as they are for OpenSSH's
+/// own agent, while the bind signature must still verify under this key.
+fn certified_key(certificate: &[u8]) -> Option<PublicKey> {
+    let mut fields = certificate;
+    let algorithm = read_string(&mut fields)?;
+    let _nonce = read_string(&mut fields)?;
+    let mut key = Vec::new();
+    match algorithm {
+        b"ssh-ed25519-cert-v01@openssh.com" => {
+            b"ssh-ed25519".as_slice().encode(&mut key).ok()?;
+            let public = read_string(&mut fields)?;
+            if public.len() != 32 {
+                return None;
+            }
+            public.encode(&mut key).ok()?;
+        }
+        b"ssh-rsa-cert-v01@openssh.com" => {
+            b"ssh-rsa".as_slice().encode(&mut key).ok()?;
+            for field in [read_string(&mut fields)?, read_string(&mut fields)?] {
+                field.encode(&mut key).ok()?;
+            }
+        }
+        _ => return None,
+    }
+    PublicKey::from_bytes(&key).ok()
+}
+
 fn decode_session_bind(mut fields: &[u8]) -> Option<AgentRequest> {
-    if Vec::<u8>::decode(&mut fields).ok()? != SESSION_BIND {
+    if read_string(&mut fields)? != SESSION_BIND {
         return None;
     }
-    let host_key = Vec::<u8>::decode(&mut fields).ok()?;
-    let session_id = Vec::<u8>::decode(&mut fields).ok()?;
-    let _signature = Vec::<u8>::decode(&mut fields).ok()?;
+    let host_key = read_string(&mut fields)?;
+    let session_id = read_string(&mut fields)?;
+    let signature = read_string(&mut fields)?;
     let forwarding = match u8::decode(&mut fields).ok()? {
         0 => false,
         1 => true,
@@ -284,22 +358,22 @@ fn decode_session_bind(mut fields: &[u8]) -> Option<AgentRequest> {
     Some(AgentRequest::SessionBind {
         forwarding,
         binding: SessionBinding {
-            session_id,
-            host_key: host_key_fingerprint(&host_key),
+            session_id: session_id.to_vec(),
+            host_key: verified_bind_host(host_key, session_id, signature),
         },
     })
 }
 
 fn decode_sign_request(mut fields: &[u8]) -> Option<AgentRequest> {
-    let key_blob = Vec::<u8>::decode(&mut fields).ok()?;
-    let message = Vec::<u8>::decode(&mut fields).ok()?;
+    let key_blob = read_string(&mut fields)?;
+    let message = read_string(&mut fields)?;
     let flags = u32::decode(&mut fields).ok()?;
     if !fields.is_empty() {
         return None;
     }
     Some(AgentRequest::Sign {
-        public_blob: key_blob,
-        message,
+        public_blob: key_blob.to_vec(),
+        message: message.to_vec(),
         flags,
     })
 }
@@ -366,12 +440,17 @@ mod tests {
         signature_payload, visible_text, AgentRequest, SessionBinding, SignKind, MAX_FRAME_LEN,
     };
     use crate::signing;
-    use rand_core::OsRng;
+    use rand_core::{OsRng, RngCore};
     use signature::Verifier;
     use ssh_encoding::{Decode, Encode};
+    use ssh_key::certificate::{Builder as CertificateBuilder, CertType};
     use ssh_key::private::RsaKeypair;
-    use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey, Signature};
+    use ssh_key::{Algorithm, Certificate, HashAlg, PrivateKey, PublicKey, Signature};
     use std::fmt;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::process::Command;
 
     /// A private identity for testing the wire handling directly; production
     /// signing goes through `KeyStore` and `ApprovalManager`.
@@ -642,51 +721,217 @@ mod tests {
             &[FAILURE]
         );
     }
-    fn session_bind(name: &[u8], forwarding: u8, trailing: &[u8]) -> Vec<u8> {
+    fn test_host() -> PrivateKey {
+        PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap()
+    }
+
+    fn bind_signature(host: &PrivateKey, session_id: &[u8]) -> Vec<u8> {
+        let signature = signing::sign(host, session_id, 0).unwrap();
+        Vec::<u8>::try_from(signature).unwrap()
+    }
+
+    fn session_bind_with(
+        host: &PrivateKey,
+        name: &[u8],
+        session_id: &[u8],
+        forwarding: u8,
+        trailing: &[u8],
+    ) -> Vec<u8> {
         let mut payload = vec![27];
         string(name, &mut payload);
-        string(b"host key blob", &mut payload);
-        string(b"session identifier", &mut payload);
-        string(b"host signature", &mut payload);
+        string(&host.public_key().to_bytes().unwrap(), &mut payload);
+        string(session_id, &mut payload);
+        string(&bind_signature(host, session_id), &mut payload);
         payload.push(forwarding);
         payload.extend_from_slice(trailing);
         frame(&payload)
     }
 
+    fn session_bind_to_blob(
+        host: &PrivateKey,
+        host_key: &[u8],
+        session_id: &[u8],
+        forwarding: u8,
+    ) -> Vec<u8> {
+        let mut payload = vec![27];
+        string(b"session-bind@openssh.com", &mut payload);
+        string(host_key, &mut payload);
+        string(session_id, &mut payload);
+        string(&bind_signature(host, session_id), &mut payload);
+        payload.push(forwarding);
+        frame(&payload)
+    }
+
+    /// A scratch directory for the external `ssh-keygen` run.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "qsbw-protocol-{}-{}",
+                std::process::id(),
+                OsRng.next_u64()
+            ));
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A host certificate for `host`, signed by a throwaway CA, as OpenSSH
+    /// sends it when the server is known by a certificate.
+    fn host_certificate(host: &PrivateKey) -> Vec<u8> {
+        let temp = TempDir::new();
+        let ca = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let ca_path = temp.0.join("ca");
+        let host_path = temp.0.join("host.pub");
+        let ca_pem = ca.to_openssh(Default::default()).unwrap();
+        fs::write(&ca_path, ca_pem.as_bytes()).unwrap();
+        fs::set_permissions(&ca_path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&host_path, host.public_key().to_openssh().unwrap()).unwrap();
+
+        let output = Command::new("/usr/bin/ssh-keygen")
+            .args(["-q", "-s"])
+            .arg(&ca_path)
+            .args(["-I", "test host certificate", "-h", "-n", "localhost"])
+            .args(["-V", "-1m:+1h"])
+            .arg(&host_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "ssh-keygen could not sign a host certificate: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let certificate = fs::read_to_string(temp.0.join("host-cert.pub")).unwrap();
+        Certificate::from_openssh(&certificate)
+            .unwrap()
+            .to_bytes()
+            .unwrap()
+    }
+
+    /// A host certificate with OpenSSH's default indefinite validity, which
+    /// `ssh-key` 0.6.7 refuses to parse as `Certificate`.
+    fn indefinite_host_certificate(host: &PrivateKey) -> Vec<u8> {
+        let ca = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let valid_before = 0x0102_0304_0506_0708_u64;
+        let mut builder = CertificateBuilder::new_with_random_nonce(
+            &mut OsRng,
+            host.public_key(),
+            0,
+            valid_before,
+        )
+        .unwrap();
+        builder.cert_type(CertType::Host).unwrap();
+        builder.key_id("indefinite host certificate").unwrap();
+        builder.valid_principal("localhost").unwrap();
+        let mut certificate = builder.sign(&ca).unwrap().to_bytes().unwrap();
+
+        // The builder rejects u64::MAX, so patch in what `ssh-keygen -s`
+        // writes by default: valid forever.
+        let marker = valid_before.to_be_bytes();
+        let at = certificate
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .unwrap();
+        certificate[at..at + marker.len()].copy_from_slice(&u64::MAX.to_be_bytes());
+        certificate
+    }
+
+    #[test]
+    fn inner_lengths_are_rejected_before_allocation() {
+        // Each of these is a few bytes long but declares an inner string of
+        // 4 GiB. The bounded reader must reject the length from the remaining
+        // slice, never asking the allocator for it.
+        let max = u32::MAX.to_be_bytes();
+
+        let mut sign = vec![SIGN_REQUEST];
+        sign.extend_from_slice(&max);
+        assert_eq!(decode_request(&frame(&sign)), None);
+
+        let mut bind = vec![27];
+        string(b"session-bind@openssh.com", &mut bind);
+        bind.extend_from_slice(&max);
+        assert_eq!(decode_request(&frame(&bind)), None);
+        assert!(super::may_be_session_bind(&frame(&bind)));
+
+        let mut sshsig = b"SSHSIG".to_vec();
+        sshsig.extend_from_slice(&max);
+        assert_eq!(classify_sign(b"key", &sshsig, &[]), SignKind::Other);
+
+        let mut login = Vec::new();
+        login.extend_from_slice(&max);
+        assert_eq!(classify_sign(b"key", &login, &[]), SignKind::Other);
+
+        // A string whose declared length is small but larger than what is
+        // left is rejected the same way.
+        let mut short = vec![SIGN_REQUEST];
+        short.extend_from_slice(&5_u32.to_be_bytes());
+        short.extend_from_slice(b"abc");
+        assert_eq!(decode_request(&frame(&short)), None);
+    }
+
+    fn session_bind(name: &[u8], forwarding: u8, trailing: &[u8]) -> Vec<u8> {
+        session_bind_with(
+            &test_host(),
+            name,
+            b"session identifier",
+            forwarding,
+            trailing,
+        )
+    }
+
     fn bound(session_id: &[u8], host_key: &[u8]) -> SessionBinding {
         SessionBinding {
             session_id: session_id.to_vec(),
-            host_key: host_key_fingerprint(host_key),
+            host_key: Some(host_key_fingerprint(host_key)),
         }
     }
 
     #[test]
     fn session_bind_is_read_for_its_forwarding_flag_and_bound_host() {
-        let binding = bound(b"session identifier", b"host key blob");
+        let host = test_host();
+        let host_blob = host.public_key().to_bytes().unwrap();
+        let session_id = b"session identifier";
+        let binding = bound(session_id, &host_blob);
+        let bind = |forwarding, trailing| {
+            session_bind_with(
+                &host,
+                b"session-bind@openssh.com",
+                session_id,
+                forwarding,
+                trailing,
+            )
+        };
         assert_eq!(
-            decode_request(&session_bind(b"session-bind@openssh.com", 0, b"")),
+            decode_request(&bind(0, b"")),
             Some(AgentRequest::SessionBind {
                 forwarding: false,
                 binding: binding.clone()
             })
         );
         assert_eq!(
-            decode_request(&session_bind(b"session-bind@openssh.com", 1, b"")),
+            decode_request(&bind(1, b"")),
             Some(AgentRequest::SessionBind {
                 forwarding: true,
                 binding
             })
         );
         assert_eq!(
-            response_payload(&handle_frame(
-                &session_bind(b"session-bind@openssh.com", 1, b""),
-                &[]
-            )),
+            response_payload(&handle_frame(&bind(1, b""), &[])),
             &[SUCCESS]
         );
 
         // Other extensions, a non-boolean flag or a trailing byte all fail.
         for malformed in [
+            bind(1, b"x"),
             session_bind(b"restrict-destination-v00@openssh.com", 1, b""),
             session_bind(b"session-bind@openssh.com", 2, b""),
             session_bind(b"session-bind@openssh.com", 1, b"x"),
@@ -694,6 +939,133 @@ mod tests {
             assert_eq!(decode_request(&malformed), None);
             assert_eq!(response_payload(&handle_frame(&malformed, &[])), &[FAILURE]);
         }
+    }
+
+    #[test]
+    fn an_unverified_bind_never_names_a_host_for_a_grant() {
+        let host = test_host();
+        let host_blob = host.public_key().to_bytes().unwrap();
+        let session_id = [7_u8; 32];
+        let mut payload = vec![27];
+        string(b"session-bind@openssh.com", &mut payload);
+        string(&host_blob, &mut payload);
+        string(&session_id, &mut payload);
+        string(b"not a signature", &mut payload);
+        payload.push(0);
+        let refused_signature = frame(&payload);
+
+        assert_eq!(
+            decode_request(&refused_signature),
+            Some(AgentRequest::SessionBind {
+                forwarding: false,
+                binding: SessionBinding {
+                    session_id: session_id.to_vec(),
+                    host_key: None,
+                },
+            }),
+            "the bind is recorded for its forwarding flag, without a host"
+        );
+
+        // A plain login on that session has no grantable server, while the
+        // same login after a verified bind does.
+        let key = b"the requested key";
+        let login = userauth(b"git", b"publickey", key, None);
+        let AgentRequest::SessionBind { binding, .. } = decode_request(&refused_signature).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            classify_sign(key, &login, &[binding]),
+            SignKind::UserAuth {
+                user: "git".into(),
+                host: String::new()
+            }
+        );
+        assert_eq!(
+            classify_sign(key, &login, &[bound(&session_id, &host_blob)]),
+            SignKind::UserAuth {
+                user: "git".into(),
+                host: host_key_fingerprint(&host_blob)
+            }
+        );
+    }
+
+    #[test]
+    fn a_certificate_backed_bind_names_the_certificate_host() {
+        let host = test_host();
+        let session_id = b"certificate session identifier";
+        let certificate = host_certificate(&host);
+        let signature = bind_signature(&host, session_id);
+        let bind = |host_key: &[u8], signature: &[u8]| {
+            let mut payload = vec![27];
+            string(b"session-bind@openssh.com", &mut payload);
+            string(host_key, &mut payload);
+            string(session_id, &mut payload);
+            string(signature, &mut payload);
+            payload.push(0);
+            frame(&payload)
+        };
+
+        assert_eq!(
+            decode_request(&bind(&certificate, &signature)),
+            Some(AgentRequest::SessionBind {
+                forwarding: false,
+                binding: SessionBinding {
+                    session_id: session_id.to_vec(),
+                    host_key: Some(host_key_fingerprint(&certificate)),
+                },
+            }),
+            "a host certificate names its server, with the fingerprint over the blob OpenSSH sent"
+        );
+
+        // A signature from another key must not verify under the certified key.
+        let other = test_host();
+        let wrong_signature = bind_signature(&other, session_id);
+        assert_eq!(
+            decode_request(&bind(&certificate, &wrong_signature)),
+            Some(AgentRequest::SessionBind {
+                forwarding: false,
+                binding: SessionBinding {
+                    session_id: session_id.to_vec(),
+                    host_key: None,
+                },
+            }),
+            "a certificate bind that does not verify names no host"
+        );
+
+        // Neither a key nor a certificate: fail closed, still recording the bind.
+        assert_eq!(
+            decode_request(&bind(b"neither a key nor a certificate", &signature)),
+            Some(AgentRequest::SessionBind {
+                forwarding: false,
+                binding: SessionBinding {
+                    session_id: session_id.to_vec(),
+                    host_key: None,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn an_indefinite_certificate_backed_bind_still_names_its_host() {
+        let host = test_host();
+        let session_id = b"indefinite certificate session";
+        let certificate = indefinite_host_certificate(&host);
+        assert!(
+            Certificate::from_bytes(&certificate).is_err(),
+            "this exercises the fallback for OpenSSH's default indefinite validity"
+        );
+
+        assert_eq!(
+            decode_request(&session_bind_to_blob(&host, &certificate, session_id, 0)),
+            Some(AgentRequest::SessionBind {
+                forwarding: false,
+                binding: SessionBinding {
+                    session_id: session_id.to_vec(),
+                    host_key: Some(host_key_fingerprint(&certificate)),
+                },
+            })
+        );
     }
 
     #[test]

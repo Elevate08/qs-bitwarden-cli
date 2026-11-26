@@ -24,6 +24,12 @@ impl Helper {
     /// the stand-ins and `sh` and `cat`, so the real `wtype` cannot be found
     /// either: no test ever types into a real window.
     fn start_with(wtype: bool) -> Self {
+        Self::start_with_env(wtype, &[])
+    }
+
+    /// As `start_with`, with `extra` in the helper's own environment (a
+    /// launcher that exported a secret, say).
+    fn start_with_env(wtype: bool, extra: &[(&str, &str)]) -> Self {
         let dir = std::env::temp_dir().join(format!(
             "qsbw-vault-test-{}-{}",
             std::process::id(),
@@ -70,10 +76,15 @@ impl Helper {
             }
             format!("{}:{}", dir.display(), tools.display())
         };
-        let mut child = Command::new(env!("CARGO_BIN_EXE_qs-bitwarden-vault"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_qs-bitwarden-vault"));
+        command
             .env("PATH", path)
             // Should a real wtype ever run, it has no display to type into.
-            .env("WAYLAND_DISPLAY", "qsbw-test-no-display")
+            .env("WAYLAND_DISPLAY", "qsbw-test-no-display");
+        for (name, value) in extra {
+            command.env(name, value);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -173,6 +184,27 @@ fn handshake_and_strictness() {
 }
 
 #[test]
+fn ambient_secrets_do_not_reach_children() {
+    // A launcher that exported the key must not defeat its one-run scope, and
+    // neither must a leftover `QSBW_*` value from the panel's own pipeline.
+    let mut helper = Helper::start_with_env(
+        true,
+        &[
+            ("BW_SESSION", "leak"),
+            ("QSBW_NEW_SECRET", "leak"),
+            ("QSBW_SEND", "leak"),
+            ("QSBW_FIDO_SALT", "leak"),
+        ],
+    );
+    let bare = helper.exec(
+        1,
+        "printf '%s-%s-%s-%s' \"${BW_SESSION-unset}\" \"${QSBW_NEW_SECRET-unset}\" \"${QSBW_SEND-unset}\" \"${QSBW_FIDO_SALT-unset}\"",
+        json!({}),
+    );
+    assert_eq!(bare["out"], "unset-unset-unset-unset");
+}
+
+#[test]
 fn the_session_key_goes_to_runs_and_never_back() {
     let mut helper = Helper::start();
     let captured = helper.exec(
@@ -223,6 +255,48 @@ fn the_session_key_goes_to_runs_and_never_back() {
         json!({ "inject": { "BW_SESSION": "secret:lock1" } }),
     );
     assert_eq!(kept["out"], "injected\n", "a held copy outlives it");
+}
+
+#[test]
+fn a_session_key_on_stderr_is_scrubbed_too() {
+    let mut helper = Helper::start();
+    let captured = helper.exec(
+        1,
+        &format!("printf 'export BW_SESSION=\"{TOKEN}\"' >&2"),
+        json!({ "capture": "session" }),
+    );
+    let shown = "export BW_SESSION=\"HELD-BY-QS-BITWARDEN-VAULT-HELPER-SESSION\"";
+    assert_eq!(
+        (captured["err"].as_str(), captured["session"].as_bool()),
+        (Some(shown), Some(true))
+    );
+    let run = helper.exec(
+        2,
+        &format!("[ \"$BW_SESSION\" = '{TOKEN}' ] && echo injected"),
+        json!({ "inject": { "BW_SESSION": "session" } }),
+    );
+    assert_eq!(run["out"], "injected\n", "the key still reached the helper");
+}
+
+#[test]
+fn a_cancelled_secret_capture_is_not_held_when_it_finishes() {
+    let mut helper = Helper::start();
+    helper.send(json!({
+        "type": "exec", "v": 1, "id": 1,
+        "argv": ["sh", "-c", "sleep 0.5; printf 'late-secret'"],
+        "capture": "secret:master"
+    }));
+    std::thread::sleep(Duration::from_millis(200));
+    // The panel cancels the prompt while the run is in flight.
+    helper.send(json!({ "type": "forgetSecret", "v": 1, "name": "master" }));
+    let late = helper.reply("id", 1);
+    assert_eq!(late["held"], false, "{late}");
+    let run = helper.exec(
+        2,
+        "printf '%s' \"$PW\"",
+        json!({ "inject": { "PW": "secret:master" } }),
+    );
+    assert_eq!(run["out"], "");
 }
 
 #[test]
@@ -505,6 +579,90 @@ fn a_forget_stops_an_auto_type_in_progress() {
 }
 
 #[test]
+fn a_forget_spares_runs_that_inject_a_kept_secret() {
+    let mut helper = Helper::start();
+    let kept = helper.exec(1, "printf 'kept'", json!({ "capture": "secret:keepme" }));
+    assert_eq!(kept["held"], true);
+    // A live session key, which a run injecting `session` holds.
+    let session = helper.exec(
+        2,
+        &format!("echo 'export BW_SESSION=\"{TOKEN}\"'"),
+        json!({ "capture": "session" }),
+    );
+    assert_eq!(session["session"], true);
+
+    let kept_mark = helper.dir.join("kept-stopped");
+    let live_mark = helper.dir.join("live-stopped");
+    let script = |mark: &std::path::Path| {
+        format!(
+            "trap 'echo stopped > {}; exit 0' TERM; while :; do sleep 0.05; done",
+            mark.display()
+        )
+    };
+    // The panel's lock: it runs with the kept copy of the key.
+    helper.send(json!({
+        "type": "exec", "v": 1, "id": 3,
+        "argv": ["sh", "-c", script(&kept_mark)],
+        "inject": { "BW_SESSION": "secret:keepme" }
+    }));
+    // A run with the live session key, which the forget drops.
+    helper.send(json!({
+        "type": "exec", "v": 1, "id": 4,
+        "argv": ["sh", "-c", script(&live_mark)],
+        "inject": { "BW_SESSION": "session" }
+    }));
+    std::thread::sleep(Duration::from_millis(300));
+    helper.send(json!({ "type": "forget", "v": 1, "keep": ["keepme"] }));
+
+    // The live-session run is terminated, while a run injecting a kept secret
+    // is not: a reply for it before its kill would be one.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let stopped = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let message = helper
+            .lines
+            .recv_timeout(remaining)
+            .expect("the live-session run was not stopped");
+        match message["id"].as_u64() {
+            Some(4) => break message,
+            Some(3) => panic!("a run injecting a kept secret was stopped: {message}"),
+            _ => {}
+        }
+    };
+    assert_eq!(stopped["code"], 0, "the run was not signalled: {stopped}");
+    assert_eq!(
+        wait_for_file(&live_mark, "the live-session run was not signalled"),
+        "stopped\n"
+    );
+    // Still no reply after the 500 ms rechecked KILL: the kept run survived.
+    assert!(
+        helper
+            .lines
+            .recv_timeout(Duration::from_millis(800))
+            .is_err(),
+        "a run injecting a kept secret was stopped"
+    );
+    assert!(!kept_mark.exists(), "the kept-secret run was signalled");
+
+    // It is still listed, and can be ended normally.
+    helper.send(json!({ "type": "kill", "v": 1, "id": 3 }));
+    let killed = helper.reply("id", 3);
+    assert_eq!(killed["code"], 0, "{killed}");
+    assert_eq!(
+        wait_for_file(&kept_mark, "the kept-secret run was not killable"),
+        "stopped\n"
+    );
+
+    // The kept secret is still the one a lock would use.
+    let run = helper.exec(
+        5,
+        "printf '%s' \"$PW\"",
+        json!({ "inject": { "PW": "secret:keepme" } }),
+    );
+    assert_eq!(run["out"], "kept");
+}
+
+#[test]
 fn a_shutdown_stops_an_auto_type_in_progress() {
     let mut helper = typing_slowly(40);
     let asked = Instant::now();
@@ -516,6 +674,19 @@ fn a_shutdown_stops_an_auto_type_in_progress() {
         "the helper waited for wtype: {:?}",
         asked.elapsed()
     );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        !helper.dir.join("typed-done").exists(),
+        "wtype outlived the helper"
+    );
+}
+
+#[test]
+fn wtype_does_not_outlive_a_crashed_helper() {
+    let mut helper = typing_slowly(50);
+    // SIGKILL: none of the helper's cleanup runs, so only PDEATHSIG can end
+    // the typing before it writes its marker.
+    helper.child.kill().unwrap();
     std::thread::sleep(Duration::from_millis(1500));
     assert!(
         !helper.dir.join("typed-done").exists(),
@@ -609,6 +780,60 @@ fn one_secret_is_served_or_copied_by_name() {
         );
         assert_eq!(reply["ok"], false, "{name}");
     }
+}
+
+#[test]
+fn a_copy_is_confirmed_by_the_write_not_the_selection_lifetime() {
+    let mut helper = Helper::start();
+    // Larger than a pipe buffer: a wl-copy that exits before reading fails the
+    // write itself, not just its exit status. Kept under the 128 KiB cap on
+    // one argv string, as the vault reaches `sh -c` that way.
+    let notes = "x".repeat(96 * 1024);
+    let vault = json!({
+        "sshCapability": "unconfirmed", "sshKeys": [],
+        "items": [{ "id": "a", "type": 2, "name": "Note", "notes": notes }]
+    })
+    .to_string();
+    helper.exec(
+        1,
+        &format!("cat <<'EOF'\n{vault}\nEOF"),
+        json!({ "capture": "vault" }),
+    );
+
+    // A wl-copy that exits 1 at once: nothing is on the clipboard.
+    std::fs::write(helper.dir.join("wl-copy"), "#!/bin/sh\nexit 1\n").unwrap();
+    let failed = helper.query(
+        20,
+        json!({ "type": "copyField", "id": "a", "field": "notes", "clearSec": 30 }),
+    );
+    assert_eq!(failed["ok"], false, "{failed}");
+
+    // A wl-copy that holds the selection while `timeout` would exit 124: the
+    // value was written, so it is a success, and the reply does not wait.
+    std::fs::write(
+        helper.dir.join("wl-copy"),
+        "#!/bin/sh\ncat > /dev/null\nsleep 1\nexit 124\n",
+    )
+    .unwrap();
+    let asked = Instant::now();
+    let copy = helper.query(
+        21,
+        json!({ "type": "copyField", "id": "a", "field": "notes", "clearSec": 30 }),
+    );
+    assert_eq!(copy["ok"], true, "{copy}");
+    assert!(
+        asked.elapsed() < Duration::from_millis(800),
+        "the reply waited for wl-copy: {:?}",
+        asked.elapsed()
+    );
+    // The helper stays responsive while the selection is still held.
+    let found = helper.query(22, json!({ "type": "search", "query": "nothing" }));
+    assert_eq!(found["value"], json!([]));
+    assert!(
+        asked.elapsed() < Duration::from_millis(800),
+        "the helper waited for wl-copy: {:?}",
+        asked.elapsed()
+    );
 }
 
 #[test]
