@@ -17,8 +17,8 @@ fails, and checks it in its self-test.
 
 | Helper | What it does | Boundary |
 |---|---|---|
-| `qs-bitwarden-vault` | Holds the unlocked session key and item secrets outside the shell process, so a shell core dump does not contain them. Its `exec` request runs whatever argv its parent sends (it refuses only an empty argv or invalid environment names); in practice that is `bw` and the panel's own scripts. It also starts `timeout` + `wl-copy` to copy, and `wtype` for auto-type, so those secrets never pass through the shell. | Talks only to the shell that started it, over stdin/stdout, and trusts only that parent. [docs/vault-helper.md](docs/vault-helper.md) |
-| `qs-bitwarden-ssh-agent` | Optional, off by default. Serves vault SSH keys to `ssh`/`git`, holding private keys in memory only. | Listens only on a unix socket in `$XDG_RUNTIME_DIR/qs-bitwarden-cli/` (mode 600, directory 700). It refuses signing for a peer with a different uid, and signing needs the user's approval in the panel (grants are scoped and revocable). [docs/ssh-agent.md](docs/ssh-agent.md) |
+| `qs-bitwarden-vault` | Holds the unlocked session key and item secrets outside the shell process, so a shell core dump does not contain them. Its `exec` request runs whatever argv its parent sends (it refuses an empty argv, invalid environment names, an unknown capture or source, a duplicate run id, and too many runs); in practice that is `bw` and the panel's own scripts. It also starts `timeout` + `wl-copy` to copy, and `wtype` for auto-type, so those secrets never pass through the shell. | Talks to the shell that started it over stdin/stdout, with no socket. It authenticates no peer, so a same-UID process can open the shell's end of that pipe through `/proc` and speak the protocol; see [docs/vault-helper.md](docs/vault-helper.md#how-the-shell-talks-to-it). |
+| `qs-bitwarden-ssh-agent` | Optional, off by default. Serves vault SSH keys to `ssh`/`git`, holding private keys in memory only. | Listens only on a unix socket in `$XDG_RUNTIME_DIR/qs-bitwarden-cli/` (mode 600, directory 700). It refuses any connection whose peer uid differs, including an identity listing, and signing needs the user's approval in the panel (grants are scoped and revocable; the five-minute cooldown is panel-side). [docs/ssh-agent.md](docs/ssh-agent.md) |
 | `qs-bitwarden-unlock-key` | Encrypts and decrypts the quick-unlock (PIN, fingerprint, FIDO2) envelope. | A short-lived filter in shell pipelines: secrets in via environment variables, envelope on stdin, result on stdout. See the README section "How quick unlock stores your password". |
 
 None of them opens a TCP or UDP socket. The agent enables tokio's `net`
@@ -29,13 +29,22 @@ that talks to the Bitwarden server.
 
 Before it uses a helper, the panel runs `helperInspectCommand`
 (`BitwardenModel.js`): the file must exist, be executable, be an ELF for this
-machine's architecture, match its own `bin/SHA256SUMS` line (checked only when
-`bin/SHA256SUMS` exists), and pass its self-test. If the shipped binary is
+machine's architecture, match its own `bin/SHA256SUMS` line (a missing
+`bin/SHA256SUMS` is a distinct `checksum=missing` refusal, not an unchecked
+pass), and pass its self-test. If the shipped binary is
 missing or fails, a local development build (such as `agent/target/debug/`) is
 used instead when present, with the same checks except the checksum. This
 catches stale or partial files, not tampering, because the checksum file sits
 next to the binary. Provenance below is the check with an independent root of
 trust.
+
+`qs-bitwarden-unlock-key` requires the account in the environment for every
+write (`create`, `add`, `remove`, `rotate`, `mark-stale`). `add --method
+fingerprint` refuses a terminal, because that envelope contains the data key;
+only a pipe or redirected stdout gets it. `remove --method fingerprint` is
+refused: fingerprint removal deletes the whole envelope. The envelope JSON is
+written once into a buffer sized for it, rather than grown through
+reallocations that would leave copies of the key.
 
 ## Source-to-binary provenance
 
@@ -45,6 +54,10 @@ dependencies, a pinned toolchain, path remapping, and the digest-pinned
 "byte-identical across build paths" runs `build-agent.sh --ci` natively on an
 x86_64 and an arm64 runner. It builds each helper twice from different paths
 and fails if the two builds differ or if the committed bytes differ from them.
+The image digest is checked to be identical in every workflow and in
+`build-agent.sh`, so a workflow-only edit cannot swap the image unnoticed. A
+fork PR still uploads its candidate, but its drift check now fails rather than
+passing with a warning; the candidate has to be committed by a maintainer.
 On pushes and tags, the job "reviewer rebuild (container re-exec)" runs
 `scripts/verify-helpers.sh --rebuild` on a plain runner, the path described
 below. On a
@@ -55,16 +68,46 @@ publish"), it creates a GitHub build-provenance attestation for all six
 binaries and attaches them to the release as `<name>-<arch>-linux` with SBOMs,
 dependency reports and debug symbols.
 
+Before a draft is made public, `.github/workflows/publish-on-master.yml`
+re-downloads its assets, requires exactly the expected asset names (refusing
+anything foreign), compares every helper and `SHA256SUMS` with the tag's
+`bin/`, and re-verifies each attestation for that tag's commit and ref. A
+re-run of `release.yml` prunes foreign assets instead of leaving them beside
+the real ones. `.github/workflows/master-verify.yml` is read-only and runs
+`--compare-tracked` on every push to `master`, so a Dependabot lockfile bump
+cannot land with a stale `bin/` unobserved.
+
+`bin/` is an exact allow-list: `SHA256SUMS` plus the six helper paths, regular
+files only, no symlinks, no seventh helper inside an architecture directory.
+`release.yml` and `helper-rebuild.yml` both enforce it.
+
 One CI path writes binaries: `.github/workflows/helper-rebuild.yml`. For a
 same-repository PR into a `release/**` branch whose Rust changes are only plain
 source under `agent/src/`, `unlock-key/src/` or `vault/src/`, it commits the pinned-image rebuild to the PR branch.
 Fork PRs are excluded, and so are runs triggered by Dependabot (`github.actor`). `scripts/helper-autocommit-eligible.sh`,
-taken from the base branch, decides which PRs qualify. The workflow itself runs
-on `pull_request`, so a same-repository PR that edits `helper-rebuild.yml`
-could bypass that gate; such an edit is visible in the PR's diff. Changes to
-Cargo files, the toolchain, `build.rs`, `.cargo` or the build script are always
-rebuilt by hand. Either way, `release.yml`'s gates rebuild from the tagged
-source, and a release only attests bytes that matched that rebuild.
+taken from the base branch, decides which PRs qualify. Its rule is
+deny-by-default: any change to `.github/**`, `deny.toml`, anything under
+`scripts/`, a Cargo or toolchain file, `.cargo`, `build.rs`, `.gitattributes`,
+a symlink, or a file inside a package other than `src/**` makes the PR
+ineligible; ordinary QML, JS, docs, tests and `bin/` are allowed.
+The workflow checks out the PR head with `persist-credentials: false` and
+passes the token only on the final `git push`, so it is not left in
+`.git/config`. `release.yml`'s gates rebuild from the tagged source, and a
+release only attests bytes that matched that rebuild. `deny.toml` denies
+duplicate crate versions (only the proc-macro `syn` is skipped), so a second
+crypto implementation cannot enter the graph as a warning.
+
+Release tags are unsigned annotated refs and mutable. Whether the `release`
+environment admits only `v*` tags and requires a reviewer lives in repository
+settings, not in this tree, as do branch protection and CODEOWNERS
+enforcement; a tag-pusher who edits the gate workflow in the same commit is
+caught by review, not by cryptography. Attestation covers the six helper
+binaries only: `Panel.qml`, `Service.qml` and `BitwardenModel.js` execute with
+full user privileges and are not attested, and `omarchy plugin update` pulls
+the default branch. The report tools are pinned except for the SBOM generator:
+`cargo-deny` is a digest-checked static binary, while `cargo-cyclonedx` is
+still `cargo install`ed from crates.io because no published digest is
+available.
 
 **Check it yourself.** One command does both checks below:
 
@@ -76,10 +119,15 @@ scripts/verify-helpers.sh --rebuild --arch all
 
 - *Attestation*: for each binary, `gh attestation verify` against this
   repository with `release.yml` as the signer workflow (`REPO` and `SIGNER` in
-  the script). The script prints the tag and commit that each attestation
-  names. A binary whose bytes did not change across releases carries several
-  attestations, and the script lists all of them. This covers released bytes
-  only: helpers rebuilt on a branch fail it until that branch is tagged.
+  the script), `--deny-self-hosted-runners`, `--source-digest` set to this
+  checkout's `HEAD`, and `--source-ref refs/tags/<tag>` when `HEAD` is exactly
+  a tag. The script also compares the commit each attestation names against
+  `HEAD` and prints the tag and commit. A binary whose bytes did not change
+  across releases carries several attestations, and the script lists all of
+  them. This proves the bytes were workflow-vouched for that commit and ref;
+  it does **not** prove this commit's source produced them. `--rebuild` /
+  `--compare-tracked` is the source-to-bytes check. Helpers rebuilt on a
+  branch fail the attestation until that branch is tagged.
 - *Rebuild*: `scripts/build-agent.sh --arch <arch> --compare-tracked`
   rebuilds `HEAD` in the pinned image and requires byte-identical output.
   It works on any commit. It needs `docker` or `podman` usable without a
@@ -148,10 +196,13 @@ choice without building anything; it only runs those probes.
 ## Other things a reviewer may look for
 
 - Item URLs open with `xdg-open`, http and https only (`normalizeOpenableUrl`).
-- Every `bw` run gets two Node preloads from the plugin directory through
+- A `bw` run gets two Node preloads from the plugin directory through
   `NODE_OPTIONS`: `bw-login-code.js` (hands bw the two-step code without an
   argv) and `bw-fast-exit.js` (skips bw's idle time after it answers). They load
-  in any Node process in those commands but act only inside bw.
+  in any Node process in those commands but act only inside bw. The exceptions
+  are `bw --version`, which has no work for them, and `bw serve`, where
+  `bw-fast-exit.js` must not act on the server process; the generator's `bw`
+  commands therefore run without `NODE_OPTIONS`.
 
 ## What the plugin does not do
 
@@ -185,9 +236,14 @@ outside system paths:
 - `${XDG_DATA_HOME:-~/.local/share}/keyrings/Default_keyring.keyring`:
   `scripts/repair-keyring.sh --auto`, run at every start, rewrites it only when
   it holds an entry gnome-keyring refuses to load, keeping a
-  `.before-repair-<time>` backup beside it;
+  `.before-repair-<time>` backup beside it. It takes an exclusive `flock`,
+  re-checks the file's inode/size/mtime and hash immediately before the
+  rename, and aborts with the file unchanged if anything wrote meanwhile. The
+  plugin also stores a split envelope just before the script runs, so a start
+  can include a keyring write even when the repair finds nothing to join;
 - on request only: `~/.config/hypr/bindings.lua` (the auto-type keybind:
-  appended on enable, creating the file if hyprland.lua loads it and it is
+  appended on enable under an exclusive `flock`, refusing a symlink, creating
+  the file if hyprland.lua loads it and it is
   missing; removed by rewriting through a temporary file renamed into place), the Downloads directory
   (`xdg-user-dir DOWNLOAD`, else `~/Downloads`) for attachments, staged in a
   `.qsbw-*` directory, and `~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent`.
