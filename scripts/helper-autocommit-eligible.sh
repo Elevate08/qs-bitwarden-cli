@@ -15,11 +15,14 @@
 #   Cargo.lock, Cargo.toml (any Cargo.*), rust-toolchain, rust-toolchain.toml
 #   (any rust-toolchain*), anything under a .cargo directory, build.rs,
 #   .gitattributes (export-ignore and export-subst alter `git archive`),
-#   scripts/build-agent.sh (the build definition, image pin included),
+#   .github/** (every workflow, including the gate that judges this diff),
+#   deny.toml, every file under scripts/ (the build definition included),
 #   a symlink, and
 #   any file inside agent/, unlock-key/ or vault/ other than src/** (tests,
 #   benches and examples are not shipped, but are kept out to stay
 #   conservative).
+# Everything not recognised as ordinary non-build content is denied: the
+# fallthrough is "no", not "yes".
 #
 # Reads GITHUB_EVENT_NAME, GITHUB_BASE_REF, IS_FORK and ACTOR from the
 # environment; needs the base branch fetched (checkout with fetch-depth: 0).
@@ -59,10 +62,20 @@ while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
   case "${path##*/}" in
     Cargo.*|rust-toolchain*|build.rs|.gitattributes) blocked="$blocked $path"; continue ;;
   esac
+  # CI configuration is never auto-committed: a workflow edit could widen the
+  # token this workflow holds or suppress the drift check that judges it.
   case "$path" in
-    scripts/build-agent.sh) blocked="$blocked $path" ;;
+    .github|.github/*|*/.github/*) blocked="$blocked $path"; continue ;;
+    deny.toml) blocked="$blocked $path"; continue ;;
+    scripts/*) blocked="$blocked $path"; continue ;;
+  esac
+  case "$path" in
     agent/src/*|unlock-key/src/*|vault/src/*) ;;
     agent/*|unlock-key/*|vault/*) blocked="$blocked $path" ;;
+    # Ordinary files the build never reads. Everything not named here stays
+    # ineligible: this is deny-by-default, not a list of known build inputs.
+    *.qml|*.js|*.md|*.json|*.png|LICENSE|bin/*|docs/*|tests/*|demo/*|pinentry/*) ;;
+    *) blocked="$blocked $path" ;;
   esac
 done <"$raw"
 [ -z "$blocked" ] || no "dependencies, toolchain or build configuration changed ($(echo $blocked)); rebuild by hand"

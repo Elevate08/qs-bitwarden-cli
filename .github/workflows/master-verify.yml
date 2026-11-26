@@ -1,0 +1,47 @@
+# Read-only verification on master.
+#
+# agent-build.yml gates release branches, and master receives only merges of
+# those branches. Dependabot, however, targets master directly: a lockfile
+# update used to land there with no check at all, leaving bin/ stale until the
+# next tag. This job runs the same source-to-bytes comparison on master, with
+# no write token and no publishing. It does not replace the release gates.
+
+name: master helper check
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: master-helper-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: tracked helpers match master (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # build-agent.sh exports HEAD with `git archive`.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compare master's tracked helpers with a fresh build
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: scripts/verify-helpers.sh --compare-tracked --arch "$ARCH"

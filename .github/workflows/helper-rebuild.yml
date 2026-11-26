@@ -130,6 +130,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.head_ref }}
+          # The token is passed to the one push below, not stored in .git/config
+          # where any later step in this job would inherit it.
+          persist-credentials: false
 
       - name: Refuse a branch that moved since the build
         if: steps.found.outputs.any == 'yes'
@@ -163,14 +166,21 @@ jobs:
             ( cd "$dir" && sha256sum -c own.sums )
             mkdir -p "bin/$arch-linux"
             for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
+              [ -f "$dir/$arch-linux/$name" ] && [ ! -L "$dir/$arch-linux/$name" ] \
+                || { echo "::error::$dir/$arch-linux/$name is not a regular file"; exit 1; }
               cp "$dir/$arch-linux/$name" "bin/$arch-linux/$name"
               chmod 755 "bin/$arch-linux/$name"
               staged+=("bin/$arch-linux/$name")
             done
           done
           # One SHA256SUMS for every architecture, from the bytes now in bin/;
-          # each artifact's own lines must appear in it unchanged.
-          ( cd bin && sha256sum -- */qs-bitwarden-* | LC_ALL=C sort -k2 > SHA256SUMS )
+          # each artifact's own lines must appear in it unchanged. Name every
+          # helper explicitly: a glob would also list a seventh file.
+          ( cd bin && for arch in x86_64 aarch64; do
+              for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
+                sha256sum "$arch-linux/$name"
+              done
+            done | LC_ALL=C sort -k2 > SHA256SUMS )
           for dir in candidate/helper-rebuild-*; do
             while IFS= read -r line; do
               grep -qxF -- "$line" bin/SHA256SUMS || { echo "::error::bin/SHA256SUMS lost: $line"; exit 1; }
@@ -178,6 +188,23 @@ jobs:
           done
           rm -rf candidate
           ( cd bin && sha256sum -c SHA256SUMS )
+          # The file list must be exactly SHA256SUMS and the six known paths,
+          # with no symlink or other special file anywhere under bin/.
+          expected="$(printf '%s\n' SHA256SUMS \
+            x86_64-linux/qs-bitwarden-ssh-agent \
+            x86_64-linux/qs-bitwarden-unlock-key \
+            x86_64-linux/qs-bitwarden-vault \
+            aarch64-linux/qs-bitwarden-ssh-agent \
+            aarch64-linux/qs-bitwarden-unlock-key \
+            aarch64-linux/qs-bitwarden-vault | LC_ALL=C sort)"
+          actual="$(cd bin && find . -type f -printf '%P\n' | LC_ALL=C sort)"
+          [ "$actual" = "$expected" ] || {
+            echo "::error::bin/ does not hold exactly SHA256SUMS and the six helpers"
+            printf '%s\n' "$actual" | sed 's/^/  got: /'
+            exit 1
+          }
+          odd="$(cd bin && find . -mindepth 1 ! -type f ! -type d -print)"
+          [ -z "$odd" ] || { echo "::error::unexpected non-regular entries in bin/: $odd"; exit 1; }
           cat bin/SHA256SUMS
           git add bin/SHA256SUMS "${staged[@]}"
           other="$(git status --porcelain | grep -Ev '^[MA]  bin/' || true)"
@@ -196,5 +223,14 @@ jobs:
           git commit -q -m "build: rebuild helpers" \
             -m "Built in the digest-pinned image by $RUN_URL from $(git rev-parse --short HEAD)." \
             -m "$(cat bin/SHA256SUMS)"
-          git push origin "HEAD:$HEAD_REF"
+          # The checkout kept no credentials. The token reaches git as an HTTP
+          # header through the environment, so it is neither in git's argv
+          # (where `ps` shows it) nor in .git/config (where later steps would
+          # inherit it). The remote stays a plain URL.
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git push "https://github.com/${GH_REPO}.git" "HEAD:$HEAD_REF"
+          unset auth
           gh workflow run agent-build.yml --ref "$HEAD_REF"

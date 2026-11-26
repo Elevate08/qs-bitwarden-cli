@@ -30,8 +30,11 @@
 //
 // Test only: QSBW_PINENTRY_TEST_UI names a program run in place of
 // `quickshell -p <dir>`, with the same environment, so the tests can answer
-// without a display. OMARCHY_SHELL_DIR names the shell kit (Commons, Ui),
-// otherwise $OMARCHY_PATH/shell or /usr/share/omarchy/shell.
+// without a display. It is ignored unless QSBW_PINENTRY_ALLOW_TEST_HOOKS=1,
+// which the shipped plugin never sets. OMARCHY_SHELL_DIR names the shell kit
+// (Commons, Ui), otherwise $OMARCHY_PATH/shell or /usr/share/omarchy/shell;
+// every component must be a non-symlink directory owned by root or this user
+// and not group/world-writable.
 
 "use strict"
 
@@ -59,7 +62,36 @@ const TEXT_MAX = 400
 const EXIT_GRACE_MS = 300
 
 const here = __dirname
-const testUi = process.env.QSBW_PINENTRY_TEST_UI || ""
+// The test hook requires a second, explicit opt-in; a plugin or shell that
+// merely inherits QSBW_PINENTRY_TEST_UI cannot turn it on.
+const testHooks = process.env.QSBW_PINENTRY_ALLOW_TEST_HOOKS === "1"
+const testUi = testHooks ? (process.env.QSBW_PINENTRY_TEST_UI || "") : ""
+
+// Every component of `dir` must be a real directory (no symlink), owned by
+// root or this user, and not group/world-writable: promptConfig links it into
+// the process that receives the typed secret.
+function trustedDirectory(dir) {
+  if (!path.isAbsolute(dir)) return false
+  const parts = dir.split("/").filter(Boolean)
+  // Every component is checked as written: `.`/`..` would validate something
+  // other than the path the caller named, so they are refused outright.
+  if (parts.some(part => part === "." || part === "..")) return false
+  const uid = process.getuid ? process.getuid() : -1
+  let current = ""
+  for (const part of parts) {
+    current += "/" + part
+    let st
+    try {
+      st = fs.lstatSync(current)
+    } catch (e) {
+      return false
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) return false
+    if (uid >= 0 && st.uid !== 0 && st.uid !== uid) return false
+    if ((st.mode & 0o022) !== 0) return false
+  }
+  return true
+}
 
 function kitDir() {
   const candidates = []
@@ -69,7 +101,7 @@ function kitDir() {
     candidates.push("/usr/share/omarchy/shell")
   }
   for (const dir of candidates) {
-    if (path.isAbsolute(dir) && fs.existsSync(path.join(dir, "Commons", "qmldir"))
+    if (trustedDirectory(dir) && fs.existsSync(path.join(dir, "Commons", "qmldir"))
         && fs.existsSync(path.join(dir, "Ui", "qmldir"))) return dir
   }
   return ""
@@ -91,7 +123,13 @@ function runtimeDir() {
   const dir = process.env.XDG_RUNTIME_DIR || ""
   if (!path.isAbsolute(dir)) return ""
   try {
-    return fs.statSync(dir).isDirectory() ? dir : ""
+    const st = fs.lstatSync(dir)
+    if (!st.isDirectory() || st.isSymbolicLink()) return ""
+    if (process.getuid && st.uid !== process.getuid()) return ""
+    // systemd's /run/user/<uid> is 0700. Anything group/world-accessible can
+    // be pre-created or raced by another user.
+    if ((st.mode & 0o077) !== 0) return ""
+    return dir
   } catch (e) {
     return ""
   }
@@ -263,7 +301,17 @@ function promptConfig(runtime, kit) {
   if (!st.isDirectory() || st.isSymbolicLink() || (process.getuid && st.uid !== process.getuid())) {
     throw new Error("unexpected " + dir)
   }
-  fs.chmodSync(dir, 0o700)
+  // fchmod the already-opened directory, never chmod a name that could be
+  // swapped for a symlink between the lstat and the chmod.
+  let dfd
+  try {
+    dfd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    fs.fchmodSync(dfd, 0o700)
+  } catch (e) {
+    throw new Error("unexpected " + dir)
+  } finally {
+    if (dfd !== undefined) fs.closeSync(dfd)
+  }
   const place = (name, write) => {
     const tmp = path.join(dir, "." + name + "." + process.pid)
     fs.rmSync(tmp, { force: true })
@@ -304,24 +352,30 @@ function uiEnvironment(dir) {
 
 // Prompt directories a SIGKILL left behind: ours by uid, a real directory
 // (no symlink followed), whose prompt.json names a pid that is gone, or none.
-// One with no prompt.json yet may be another run between mkdtemp and the
-// write, so it goes only once it is old. Errors leave the directory alone.
+// The name must be exactly the one getpin makes: qsbw-pinentry-<16 hex>-<6
+// alphanumerics>. Anything else is not ours to remove -- in particular the
+// qsbw-pinentry-ui-<id> config directory promptConfig keeps for a live prompt.
+// A directory without a readable prompt.json is never removed either: it may
+// be another run between mkdtemp and the write, and the sweep has no business
+// deleting a tree it did not make (only prompt.json proves it did).
+// Errors leave the directory alone.
 function sweepStale(runtime) {
   let names
   try { names = fs.readdirSync(runtime) } catch (e) { return }
   for (const name of names) {
-    if (!/^qsbw-pinentry-[A-Za-z0-9]{6}$/.test(name)) continue
+    if (!/^qsbw-pinentry-[0-9a-f]{16}-[A-Za-z0-9]{6}$/.test(name)) continue
     const dir = path.join(runtime, name)
     try {
       const st = fs.lstatSync(dir)
       if (!st.isDirectory() || (process.getuid && st.uid !== process.getuid())) continue
-      let pid = 0
+      let pid
       try {
         const file = path.join(dir, "prompt.json")
         if (!fs.lstatSync(file).isFile()) continue
         pid = JSON.parse(fs.readFileSync(file, "utf8")).pid
       } catch (e) {
-        if (e.code !== "ENOENT" || Date.now() - st.mtimeMs < 60000) continue
+        // No prompt.json, or one half-written: not ours to delete.
+        continue
       }
       if (pid === process.pid) continue
       if (Number.isInteger(pid) && pid > 0) {
@@ -353,7 +407,10 @@ function getpin() {
     exitTimer: null, settled: false, exited: false }
   run = r
   try {
-    r.dir = fs.mkdtempSync(path.join(runtime, "qsbw-pinentry-"))
+    // A fresh random token in the name, on top of mkdtemp's own suffix, so a
+    // stale directory cannot be guessed and pre-created as the next prompt's.
+    const token = crypto.randomBytes(8).toString("hex")
+    r.dir = fs.mkdtempSync(path.join(runtime, "qsbw-pinentry-" + token + "-"))
     fs.chmodSync(r.dir, 0o700)
     const ask = {
       title: settings.title, description: settings.description, prompt: settings.prompt,

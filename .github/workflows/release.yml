@@ -117,16 +117,41 @@ jobs:
               }
             done
           done
-          # Nothing else under bin/: an architecture the panel does not know
-          # would ship unchecked.
-          extra="$(cd bin && find . -type f ! -name SHA256SUMS ! -path './x86_64-linux/*' ! -path './aarch64-linux/*')"
-          [ -z "$extra" ] || { echo "::error::unexpected files in bin/: $extra"; exit 1; }
+          # Nothing else under bin/: an architecture the panel does not know,
+          # or a seventh helper inside a known one, would ship unchecked. The
+          # file list must be exactly SHA256SUMS plus the six known paths.
+          expected="$(printf '%s\n' SHA256SUMS \
+            x86_64-linux/qs-bitwarden-ssh-agent \
+            x86_64-linux/qs-bitwarden-unlock-key \
+            x86_64-linux/qs-bitwarden-vault \
+            aarch64-linux/qs-bitwarden-ssh-agent \
+            aarch64-linux/qs-bitwarden-unlock-key \
+            aarch64-linux/qs-bitwarden-vault | LC_ALL=C sort)"
+          actual="$(cd bin && find . -type f -printf '%P\n' | LC_ALL=C sort)"
+          [ "$actual" = "$expected" ] || {
+            echo "::error::bin/ does not hold exactly SHA256SUMS and the six helpers"
+            printf '%s\n' "$actual" | sed 's/^/  got: /'
+            exit 1
+          }
+          odd="$(cd bin && find . -mindepth 1 ! -type f ! -type d -print)"
+          [ -z "$odd" ] || { echo "::error::unexpected non-regular entries in bin/: $odd"; exit 1; }
 
       - name: Collect the dependency and licence report
         # The gates' dependency policy, published as evidence.
         run: |
           mkdir -p dist
-          cargo install cargo-deny --version 0.20.2 --locked
+          # The same digest-pinned static build agent-build.yml runs, not
+          # `cargo install` from crates.io, so the report tool is the one this
+          # repository pinned.
+          version=0.20.2
+          digest=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+          base="https://github.com/EmbarkStudios/cargo-deny/releases/download/$version"
+          archive="cargo-deny-$version-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL -o "$archive" "$base/$archive"
+          echo "$digest  $archive" | sha256sum -c -
+          tar -xzf "$archive" --strip-components=1 -C /usr/local/cargo/bin \
+            "cargo-deny-$version-x86_64-unknown-linux-musl/cargo-deny"
+          cargo-deny --version
           cargo deny --manifest-path agent/Cargo.toml --config deny.toml \
             list --layout crate --format json > dist/dependency-licences.json
           # The unlock tool and the vault helper are their own packages with
@@ -497,7 +522,21 @@ jobs:
           # A draft: the tag is on a release branch not yet merged to master.
           # publish-on-master.yml publishes it when the commit lands there.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::notice::release $TAG exists; uploading assets to it"
+            echo "::notice::release $TAG exists; pruning foreign assets and uploading"
+            # A re-run must not leave an asset this workflow never built (a
+            # manual upload, a half-finished earlier run): publish-on-master
+            # only trusts the release.yml asset set.
+            allowed=()
+            for asset in "${assets[@]}"; do allowed+=("${asset##*/}"); done
+            while IFS= read -r name; do
+              [ -n "$name" ] || continue
+              found=0
+              for keep in "${allowed[@]}"; do [ "$name" = "$keep" ] && { found=1; break; }; done
+              if [ "$found" -eq 0 ]; then
+                echo "::notice::removing unexpected asset $name from $TAG"
+                gh release delete-asset "$TAG" "$name" --yes
+              fi
+            done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
             gh release upload "$TAG" "${assets[@]}" --clobber
           else
             gh release create "$TAG" "${assets[@]}" --draft \
